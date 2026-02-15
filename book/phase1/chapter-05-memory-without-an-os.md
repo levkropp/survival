@@ -1,8 +1,59 @@
 # Chapter 5: Memory Without an OS
 
-## What Happens When You Call malloc()
+## The Missing Floor
 
-On a normal desktop system, memory management is layered:
+At the end of Chapter 4, we have a working UEFI application — it boots, echoes keystrokes, and shuts down. But it draws text using UEFI's built-in console, which gives us no control over colors, fonts, or layout. To build a real workstation UI, we need to draw our own pixels on a framebuffer.
+
+A framebuffer is just a chunk of memory where each address corresponds to a pixel. To draw, we write values to memory. To scroll, we copy blocks of memory around. To clear the screen, we fill a region of memory with a single value.
+
+So before we can draw anything, we need to be able to do three things: allocate memory, fill memory, and copy memory.
+
+On a normal system, the C standard library gives you `malloc`, `memset`, and `memcpy`. But we compiled with `-ffreestanding` — the standard library doesn't exist. We need to build these from scratch.
+
+## Filling Memory
+
+The simplest memory operation is filling a region with a single byte value. We'll need this constantly — zeroing buffers, clearing screen regions, padding strings with spaces. Let's write it:
+
+```c
+void mem_set(void *dst, UINT8 val, UINTN size) {
+    UINT8 *d = (UINT8 *)dst;
+    for (UINTN i = 0; i < size; i++)
+        d[i] = val;
+}
+```
+
+`dst` is a `void *` — a pointer to "anything." C doesn't let you do arithmetic on void pointers because it doesn't know how big "anything" is. So we cast it to `UINT8 *` — a pointer to unsigned bytes — which lets us index individual bytes with `d[i]`.
+
+`val` is the byte to fill with. `UINT8` is an unsigned 8-bit integer (0-255). For zeroing, you pass `0`. For filling with spaces, you pass `' '` (which is `0x20`).
+
+`size` is how many bytes to fill. `UINTN` is UEFI's "unsigned integer, pointer-sized" type — 64 bits on our ARM64 system, big enough to address any amount of memory.
+
+The loop is simple: set each byte, one at a time. A production `memset` would use 64-bit writes for speed and only byte-write the edges. But our version is correct and fast enough. Our biggest fill operation will be clearing a framebuffer — a few megabytes. On a 1.5 GHz Cortex-A53, that takes milliseconds.
+
+## Copying Memory
+
+The other primitive operation is copying bytes from one place to another:
+
+```c
+void mem_copy(void *dst, const void *src, UINTN size) {
+    UINT8 *d = (UINT8 *)dst;
+    const UINT8 *s = (const UINT8 *)src;
+    for (UINTN i = 0; i < size; i++)
+        d[i] = s[i];
+}
+```
+
+Same pattern: cast to byte pointers, loop and copy. The `const` on `src` is a promise that we won't modify the source data.
+
+There's a subtle trap here. If `dst` and `src` overlap and `dst` comes *after* `src`, we'll overwrite source bytes before we've copied them. The standard library has `memmove` that handles this by copying backward when needed.
+
+We only copy forward. In practice, this is fine — the one place where overlap matters is framebuffer scrolling, where we copy screen rows upward (lower addresses to higher addresses). Since the destination comes *before* the source in memory, our forward copy is correct for that case. If we ever needed backward copying, we'd add it then.
+
+## Allocating Memory
+
+Now for the interesting part. We have `mem_set` and `mem_copy`, but where do we *get* memory from?
+
+On a normal system:
 
 ```
 Your code calls malloc(1024)
@@ -22,13 +73,7 @@ Physical RAM chips
 
 We have none of this. No C library. No kernel. No virtual memory. No swap. We have 2 GB of physical RAM and a firmware that knows about it.
 
-So how do we allocate memory?
-
-## UEFI Memory Services
-
-UEFI Boot Services provides two memory allocation functions:
-
-### AllocatePool
+UEFI Boot Services provides `AllocatePool` — the firmware's equivalent of `malloc`:
 
 ```c
 EFI_STATUS AllocatePool(
@@ -38,97 +83,9 @@ EFI_STATUS AllocatePool(
 );
 ```
 
-This is the UEFI equivalent of `malloc()`. You ask for a number of bytes, and it gives you a pointer to that much memory. The memory is guaranteed to be aligned to at least 8 bytes.
+You ask for a number of bytes, and the firmware finds a free block and gives you a pointer. The `PoolType` tells the firmware what you're using it for — we always use `EfiLoaderData`, which means "general-purpose data for a boot application."
 
-**`PoolType`** tells the firmware what you're using the memory for. This matters because UEFI tracks memory regions by type. The types we care about:
-
-- `EfiLoaderData` — General-purpose data for a boot application. This is what we use.
-- `EfiLoaderCode` — Executable code for a boot application.
-- `EfiBootServicesData` — Data used by boot services themselves.
-
-We always use `EfiLoaderData` because our allocations are for general data (buffers, strings, structures).
-
-### FreePool
-
-```c
-EFI_STATUS FreePool(VOID *Buffer);
-```
-
-The counterpart to `AllocatePool`. Pass the pointer you got back and the memory is returned to the firmware's pool.
-
-### AllocatePages (not used yet)
-
-For large allocations, UEFI provides `AllocatePages` which allocates memory in 4 KB page granularity. We don't need this in Phase 1, but it becomes relevant when we need large contiguous buffers later.
-
-## Our Memory Module
-
-Our memory module is deliberately minimal. It's a thin wrapper around UEFI's allocator, plus a few utility functions that we'd normally get from the C standard library. Let's walk through every line.
-
-### The Header: mem.h
-
-```c
-#ifndef MEM_H
-#define MEM_H
-
-#include "boot.h"
-```
-
-Include guards, and we pull in `boot.h` for the UEFI types and our `g_boot` global.
-
-```c
-void mem_init(void);
-```
-
-Initialization function. Currently empty, but having it in the API lets us add setup logic later (like pre-allocating an arena) without changing any calling code.
-
-```c
-void *mem_alloc(UINTN size);
-void mem_free(void *ptr);
-```
-
-Our allocation interface. `mem_alloc` returns a pointer to `size` bytes of zeroed memory, or `NULL` on failure. `mem_free` releases memory allocated by `mem_alloc`.
-
-Why wrap `AllocatePool` instead of calling it directly? Consistency and future-proofing. If we later want to switch to an arena allocator, a slab allocator, or add allocation tracking for debugging, we change `mem.c` and nothing else.
-
-```c
-void mem_set(void *dst, UINT8 val, UINTN size);
-void mem_copy(void *dst, const void *src, UINTN size);
-```
-
-These replace `memset` and `memcpy` from the C standard library. Remember, we compiled with `-ffreestanding`, so the standard library doesn't exist. Any code that needs to fill or copy memory blocks must use these.
-
-There's actually a subtle trap here. GCC sometimes **generates implicit calls** to `memcpy` or `memset`. For example, if you write:
-
-```c
-struct big_thing a = b;  // Struct copy — GCC may emit a memcpy call
-char buffer[256] = {0};  // Array init — GCC may emit a memset call
-```
-
-With `-ffreestanding`, GCC is supposed to avoid this, but it doesn't always. If you get mysterious "undefined reference to memcpy" linker errors, that's why. Linking with `libgcc.a` (which we do) often resolves this. If not, you can provide your own `memcpy` and `memset` functions with exactly those names.
-
-```c
-UINTN str_len(const CHAR8 *s);
-```
-
-String length for 8-bit strings. `CHAR8` is UEFI's type for a single byte character. We'll need this when working with our ASCII text content (survival documentation, source code files, etc.).
-
-```c
-#endif
-```
-
-Close the include guard.
-
-### The Implementation: mem.c
-
-```c
-#include "mem.h"
-
-void mem_init(void) {
-    /* Nothing to do — we use UEFI AllocatePool directly */
-}
-```
-
-A placeholder. The comment explains why it's empty. This is intentional, not an oversight.
+Let's wrap this in a function that's easier to use:
 
 ```c
 void *mem_alloc(UINTN size) {
@@ -141,19 +98,21 @@ void *mem_alloc(UINTN size) {
 }
 ```
 
-Let's trace through this carefully:
+Let's trace through this carefully.
 
-1. We declare `ptr` and initialize it to `NULL`. Always initialize pointers — an uninitialized pointer contains whatever garbage was in memory at that location.
+First, we declare `ptr` and initialize it to `NULL`. Always initialize pointers — an uninitialized pointer contains whatever garbage was in memory at that location.
 
-2. We call `AllocatePool`. The firmware looks through its internal free list, finds a block of at least `size` bytes, marks it as used, and writes the address to `ptr` through the double-pointer `&ptr`.
+Then we call `AllocatePool`. The firmware looks through its internal free list, finds a block of at least `size` bytes, marks it as used, and writes the address into `ptr` through the double-pointer `&ptr`. That double-pointer is important — `AllocatePool` needs a *pointer to our pointer* so it can modify our pointer.
 
-3. We check the return status with `EFI_ERROR()`. This macro evaluates to true if the status indicates an error. Possible errors:
-   - `EFI_OUT_OF_RESOURCES` — Not enough memory
-   - `EFI_INVALID_PARAMETER` — Bad argument (shouldn't happen with correct code)
+We check the return status with `EFI_ERROR()`, a macro that evaluates to true if something went wrong. If allocation fails (most likely `EFI_OUT_OF_RESOURCES` — no memory left), we return `NULL`. The caller must check for this.
 
-4. We **zero the memory** with `mem_set`. Unlike `calloc` in the standard library, `AllocatePool` does NOT guarantee that the returned memory is zeroed. It could contain leftover data from a previous allocation or from the firmware's own operations. Zeroing prevents bugs where code assumes freshly allocated memory is all zeros.
+Then — and this is crucial — we **zero the memory** with `mem_set`. Unlike the standard library's `calloc`, `AllocatePool` does NOT guarantee zeroed memory. The returned block could contain leftover data from a previous allocation, from the firmware's internal operations, or from whatever happened to be in RAM at boot. If your code assumes freshly allocated memory is all zeros (and it will), you need this.
 
-5. We return the pointer (or `NULL` if allocation failed).
+Finally, we return the pointer.
+
+## Freeing Memory
+
+The counterpart to `AllocatePool` is `FreePool`:
 
 ```c
 void mem_free(void *ptr) {
@@ -162,34 +121,11 @@ void mem_free(void *ptr) {
 }
 ```
 
-We check for `NULL` before calling `FreePool`. Calling `FreePool(NULL)` is undefined behavior in UEFI — some implementations crash, some silently ignore it. The NULL check makes `mem_free` safe to call with any pointer, including NULL. This mirrors the behavior of standard `free()`.
+We check for `NULL` before calling `FreePool`. In UEFI, calling `FreePool(NULL)` is undefined behavior — some implementations crash, some silently ignore it. The `NULL` check makes `mem_free` safe to call with any pointer, mirroring how the standard library's `free(NULL)` is defined to be a no-op.
 
-```c
-void mem_set(void *dst, UINT8 val, UINTN size) {
-    UINT8 *d = (UINT8 *)dst;
-    for (UINTN i = 0; i < size; i++)
-        d[i] = val;
-}
-```
+## String Length
 
-A byte-by-byte memory fill. We cast `dst` to `UINT8 *` (pointer to unsigned byte) so we can index individual bytes. The loop sets each byte to `val`.
-
-This is deliberately simple. A production `memset` would use 64-bit writes for the bulk of the operation and only use byte writes for the first/last few bytes. But our version is correct, easy to understand, and fast enough for our needs. We're not filling gigabytes — our largest operations are clearing the framebuffer, which is a few megabytes at most.
-
-```c
-void mem_copy(void *dst, const void *src, UINTN size) {
-    UINT8 *d = (UINT8 *)dst;
-    const UINT8 *s = (const UINT8 *)src;
-    for (UINTN i = 0; i < size; i++)
-        d[i] = s[i];
-}
-```
-
-Byte-by-byte memory copy. Note the `const` on `src` — we promise not to modify the source data.
-
-**Important caveat:** this implementation doesn't handle overlapping regions correctly. If `dst` and `src` overlap and `dst` comes after `src`, we'll overwrite source data before we've read it. The standard library's `memmove` handles this by copying backward when needed. Our code only copies forward.
-
-In practice, this matters in one place: scrolling the framebuffer. When we scroll, we copy framebuffer memory from a lower address (higher rows) to a higher address (lower rows). Since the destination is *before* the source in memory, our forward copy is correct. If we ever needed to copy in the other direction, we'd need to add a backward-copy path.
+One more utility. We'll need to know the length of strings when rendering text — to center text, to right-align numbers, to truncate filenames that don't fit:
 
 ```c
 UINTN str_len(const CHAR8 *s) {
@@ -200,9 +136,140 @@ UINTN str_len(const CHAR8 *s) {
 }
 ```
 
-Count characters until we hit a zero byte (the null terminator). This is identical to the standard `strlen` function. The UEFI firmware uses null-terminated strings just like C.
+`CHAR8` is UEFI's type for a single-byte character. This function counts characters until it hits a zero byte (the null terminator) — identical to the standard `strlen`. We use `CHAR8` instead of `char` to be explicit about the type width, since UEFI code deals with both 8-bit and 16-bit strings.
 
-## Memory Map: What's Where?
+## The Header
+
+Now let's package these functions into a module. Create `src/mem.h`:
+
+```c
+#ifndef MEM_H
+#define MEM_H
+
+#include "boot.h"
+
+void mem_init(void);
+
+void *mem_alloc(UINTN size);
+void mem_free(void *ptr);
+
+void mem_set(void *dst, UINT8 val, UINTN size);
+void mem_copy(void *dst, const void *src, UINTN size);
+UINTN str_len(const CHAR8 *s);
+
+#endif /* MEM_H */
+```
+
+We include `boot.h` so that any file including `mem.h` gets access to the UEFI types (`UINTN`, `UINT8`, `CHAR8`) and to `g_boot`.
+
+There's one function we haven't discussed yet: `mem_init`. Here it is:
+
+```c
+void mem_init(void) {
+    /* Nothing to do — we use UEFI AllocatePool directly */
+}
+```
+
+An empty function. Why declare it? Because the pattern of having an `_init` function for each module gives us a clean startup sequence in `main.c`: `mem_init()`, `fb_init()`, `fs_init()`, etc. If we later want to pre-allocate an arena or set up allocation tracking for debugging, we add that code here — without changing any calling code.
+
+## The Implementation
+
+Create `src/mem.c` with everything we've built:
+
+```c
+#include "mem.h"
+
+void mem_init(void) {
+    /* Nothing to do — we use UEFI AllocatePool directly */
+}
+
+void *mem_alloc(UINTN size) {
+    void *ptr = NULL;
+    EFI_STATUS status = g_boot.bs->AllocatePool(EfiLoaderData, size, &ptr);
+    if (EFI_ERROR(status))
+        return NULL;
+    mem_set(ptr, 0, size);
+    return ptr;
+}
+
+void mem_free(void *ptr) {
+    if (ptr)
+        g_boot.bs->FreePool(ptr);
+}
+
+void mem_set(void *dst, UINT8 val, UINTN size) {
+    UINT8 *d = (UINT8 *)dst;
+    for (UINTN i = 0; i < size; i++)
+        d[i] = val;
+}
+
+void mem_copy(void *dst, const void *src, UINTN size) {
+    UINT8 *d = (UINT8 *)dst;
+    const UINT8 *s = (const UINT8 *)src;
+    for (UINTN i = 0; i < size; i++)
+        d[i] = s[i];
+}
+
+UINTN str_len(const CHAR8 *s) {
+    UINTN len = 0;
+    while (s[len])
+        len++;
+    return len;
+}
+```
+
+Six functions, 30 lines. Every byte of this code exists because something in our system needs it:
+- `mem_set` — zeroing allocations, clearing framebuffer regions, padding display lines
+- `mem_copy` — scrolling the framebuffer, copying pixel data
+- `mem_alloc` — allocating buffers for file data, string building
+- `mem_free` — releasing those buffers
+- `str_len` — calculating text positions for rendering
+
+## A Note on GCC and -ffreestanding
+
+There's a subtle trap with `-ffreestanding` that's worth knowing about. Even with that flag, GCC sometimes **generates implicit calls** to `memcpy` or `memset`. For example:
+
+```c
+struct big_thing a = b;  // Struct copy — GCC may emit a memcpy call
+char buffer[256] = {0};  // Array init — GCC may emit a memset call
+```
+
+With `-ffreestanding`, GCC is supposed to avoid this, but it doesn't always. If you get mysterious "undefined reference to memcpy" linker errors, that's why. Linking with `libgcc.a` (which we do in our Makefile) usually resolves this. If not, you'd need to provide `memcpy` and `memset` functions with exactly those names.
+
+## Wiring Into main.c
+
+We add `mem_init()` to our startup sequence. In `src/main.c`:
+
+```c
+#include "boot.h"
+#include "mem.h"
+
+struct boot_state g_boot;
+```
+
+And at the top of `efi_main`, after populating `g_boot`:
+
+```c
+    g_boot.image_handle = image_handle;
+    g_boot.st = st;
+    g_boot.bs = st->BootServices;
+    g_boot.rs = st->RuntimeServices;
+
+    g_boot.bs->SetWatchdogTimer(0, 0, 0, NULL);
+
+    mem_init();
+```
+
+Right now `mem_init` does nothing, but the call establishes the pattern. When we add `fb_init()` in the next chapter, the startup sequence will be clear:
+
+```c
+    mem_init();     // Memory first — everything else may allocate
+    fb_init();      // Framebuffer second — needs memory for buffers
+```
+
+Memory goes first because everything else might need to allocate.
+
+## Memory Map
 
 When our application runs, memory is organized by UEFI roughly like this:
 
@@ -226,28 +293,29 @@ Address Space (simplified)
 ─────────────────────────────────
 ```
 
-The exact addresses depend on the firmware. We never hardcode addresses — we always ask UEFI for pointers (through `AllocatePool` or protocol queries).
+The exact addresses depend on the firmware. We never hardcode addresses — we always ask UEFI for pointers through `AllocatePool` or protocol queries.
 
-The framebuffer is at a memory-mapped I/O address, meaning it's not actually RAM — it's a region of the address space that's wired to the display hardware. When you write a value to a framebuffer address, the display controller reads it and sends the corresponding pixel color to the monitor.
+The framebuffer address is special: it's not actually RAM. It's a region of the address space wired to the display controller. When you write a value there, the display hardware reads it and sends the corresponding pixel color to the monitor. We'll explore this in the next chapter.
 
 ## Why Not a More Sophisticated Allocator?
 
-You might wonder why we use UEFI's allocator directly instead of building a proper heap with `malloc`/`free` semantics, free lists, coalescing, and so forth.
+You might wonder why we don't build a proper heap with free lists, coalescing, and splitting. The answer: we don't need one yet.
 
-The answer is: we don't need one yet. Our Phase 1 application is simple:
-- All major data structures (the boot state, the font) are global or stack-allocated
-- We don't do dynamic allocation in a loop
-- We don't have allocation patterns that would fragment memory
+Our application is simple right now. All major data structures are global or stack-allocated. We don't do dynamic allocation in tight loops. We don't have allocation patterns that would fragment memory.
 
-If we later need something more sophisticated — for example, for the text editor in Phase 4 — we can add an arena allocator or a simple free-list allocator on top of `mem_alloc`. The current interface is designed to be replaced without changing any calling code.
+If we later need something more sophisticated — an arena allocator for the text editor, a slab allocator for frequently-allocated structures — we change `mem_alloc` and `mem_free` in `mem.c` and nothing else. The rest of the codebase just calls `mem_alloc(size)` and doesn't care what's behind it.
 
-## Key Takeaways
+## What We Have
 
-- Without an OS, we use UEFI `AllocatePool`/`FreePool` for dynamic memory
-- We must provide our own `mem_set` and `mem_copy` because the C standard library doesn't exist
-- Always zero memory after allocation — `AllocatePool` doesn't guarantee zeroed memory
-- Always check for NULL before freeing
-- Our `mem_copy` only works correctly when regions don't overlap (or when `dst < src`)
-- Start simple. A complex allocator can be added later when the need arises.
+Three files now:
 
-Next: the most visually exciting part — painting pixels on the screen.
+```
+src/boot.h   — Global state structure and UEFI includes
+src/mem.h    — Memory allocation and utility functions
+src/mem.c    — Implementation: 6 functions, 30 lines
+src/main.c   — Entry point, console I/O loop, shutdown
+```
+
+We still can't do anything visible with this — the application behaves exactly the same as before. But we've laid the foundation for everything that follows. The framebuffer driver needs `mem_set` to clear the screen, `mem_copy` to scroll, and `mem_alloc` to create buffers. The file browser will need `mem_alloc` to load file contents. Every module from here on will `#include "mem.h"`.
+
+Next, we put memory to work — painting pixels on the screen.

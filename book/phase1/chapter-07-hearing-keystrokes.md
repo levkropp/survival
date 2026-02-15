@@ -1,105 +1,36 @@
 # Chapter 7: Hearing Keystrokes
 
-## The Problem of Input
+## The Other Half
 
-We can paint pixels on the screen. Now we need to hear back from the user. Without keyboard input, our workstation is just a very expensive picture frame.
+We can paint pixels. Now we need to hear back from the user. Without keyboard input through our framebuffer system, the workstation is just an expensive picture frame.
 
-On a normal system, keyboard input goes through many layers:
-
-```
-Physical key press
-       ↓
-USB HID controller generates interrupt
-       ↓
-OS kernel USB driver reads HID report
-       ↓
-Kernel input subsystem translates to key event
-       ↓
-Window manager routes to focused application
-       ↓
-Application's event loop processes the key
-```
-
-We skip most of this. UEFI handles the USB stack and the HID translation for us. We just need to ask "was a key pressed?" and UEFI gives us the answer.
+In Chapter 4, we used UEFI's console input directly — `WaitForEvent` plus `ReadKeyStroke`, checking `ScanCode` and `UnicodeChar` fields inline. That worked for the console loop, but as we add a framebuffer UI, file browser, and text viewer, every piece of code that reads a key will need the same translation logic. Let's extract it into a module.
 
 ## How UEFI Keyboard Input Works
 
-UEFI provides keyboard input through the **Simple Text Input Protocol**, which lives at `SystemTable->ConIn`. This protocol has two important members:
+A quick recap. UEFI provides keyboard input through `SystemTable->ConIn`, the Simple Text Input Protocol. It has two members we care about:
 
-```c
-typedef struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL {
-    EFI_INPUT_RESET    Reset;         // Reset the input device
-    EFI_INPUT_READ_KEY ReadKeyStroke; // Read a keystroke
-    EFI_EVENT          WaitForKey;    // Event that fires when a key is available
-} EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
-```
+- **`ReadKeyStroke`** — checks if a key is available. Returns immediately: `EFI_SUCCESS` with the key, or `EFI_NOT_READY` if nothing is buffered.
+- **`WaitForKey`** — an event that fires when a key arrives. Pass it to `WaitForEvent` to block until input.
 
-### ReadKeyStroke
-
-```c
-EFI_STATUS ReadKeyStroke(
-    EFI_SIMPLE_TEXT_INPUT_PROTOCOL *This,
-    EFI_INPUT_KEY *Key
-);
-```
-
-This function checks if a key has been pressed. If yes, it fills in the `Key` structure and returns `EFI_SUCCESS`. If no key is waiting, it returns `EFI_NOT_READY`. It never blocks — it always returns immediately.
-
-The `EFI_INPUT_KEY` structure has two fields:
+`ReadKeyStroke` fills an `EFI_INPUT_KEY`:
 
 ```c
 typedef struct {
-    UINT16 ScanCode;     // For special keys (arrows, function keys, etc.)
+    UINT16 ScanCode;     // For special keys (arrows, function keys)
     CHAR16 UnicodeChar;  // For normal keys (letters, numbers, symbols)
 } EFI_INPUT_KEY;
 ```
 
-These two fields work together in a specific way:
+For normal keys like 'A', `ScanCode` is 0 and `UnicodeChar` is the character. For special keys like Up Arrow, `UnicodeChar` is 0 and `ScanCode` identifies which key. They're mutually exclusive.
 
-- **Normal key** (like 'A'): `ScanCode` is 0, `UnicodeChar` is the character ('A', or 'a', depending on shift state)
-- **Special key** (like Up arrow): `UnicodeChar` is 0, `ScanCode` identifies which special key
+The problem: every caller has to check both fields and translate. And UEFI's scan codes are small numbers (`0x01` for Up, `0x02` for Down) that could collide with ASCII characters. We need a unified key code space.
 
-They're mutually exclusive. For any given keystroke, exactly one field is meaningful and the other is zero.
+There's another problem we'll hit later: Simple Text Input tells us *what* key was pressed, but not *how*. Was Ctrl held? Shift? Alt? For a text editor with Ctrl+C copy and Ctrl+V paste, we need modifier state. UEFI has an answer for that too, but it's a separate protocol. We'll get to it.
 
-### WaitForKey
+## Defining Our Key Codes
 
-`WaitForKey` is a UEFI event. You don't call it directly — you pass it to `WaitForEvent`:
-
-```c
-EFI_STATUS WaitForEvent(
-    UINTN NumberOfEvents,     // How many events to wait for
-    EFI_EVENT *Event,         // Array of events
-    UINTN *Index              // Which event fired (output)
-);
-```
-
-`WaitForEvent` blocks — the CPU goes idle until one of the events fires. This is much better than busy-polling in a loop, because the CPU can enter a low-power state while waiting. When a key is pressed, the USB controller generates an interrupt, the firmware processes it, and `WaitForEvent` returns.
-
-The `Index` output tells you which event in the array fired. Since we only pass one event, it's always 0. But the function is designed for waiting on multiple events simultaneously — useful when you want to wait for either a key press OR a timer tick.
-
-### UEFI Scan Codes
-
-The UEFI specification defines these scan codes for special keys:
-
-```
-0x01 = Up Arrow        0x09 = Page Up
-0x02 = Down Arrow      0x0A = Page Down
-0x03 = Right Arrow     0x0B = F1
-0x04 = Left Arrow      0x0C = F2
-0x05 = Home            0x0D = F3
-0x06 = End             0x0E = F4
-0x07 = Insert          0x0F = F5
-0x08 = Delete          ...
-0x17 = Escape          0x14 = F10
-```
-
-Notice that Escape has a scan code (`0x17`) but also an ASCII value (`0x1B`). Different firmware implementations handle this differently — some set the scan code, some set the Unicode character, some set both. We check for both to be safe.
-
-## Our Keyboard Abstraction
-
-We wrap UEFI's keyboard interface in a thin abstraction layer. The goal is twofold: simplify the calling code, and define our own key constants that won't change even if we replace the UEFI keyboard driver with a bare-metal USB driver later.
-
-### The Header: kbd.h
+Create `src/kbd.h`:
 
 ```c
 #ifndef KBD_H
@@ -108,10 +39,9 @@ We wrap UEFI's keyboard interface in a thin abstraction layer. The goal is twofo
 #include "boot.h"
 ```
 
-Standard include guard and our UEFI type definitions.
+First, the keys that have ASCII values — these match their standard ASCII codes:
 
 ```c
-/* Key codes for special keys */
 #define KEY_NONE    0
 #define KEY_ESC     0x1B
 #define KEY_ENTER   0x0D
@@ -119,9 +49,9 @@ Standard include guard and our UEFI type definitions.
 #define KEY_TAB     0x09
 ```
 
-These first five key codes match their ASCII values. `KEY_ESC` is `0x1B` (ASCII Escape), `KEY_ENTER` is `0x0D` (ASCII Carriage Return), `KEY_BS` is `0x08` (ASCII Backspace), and `KEY_TAB` is `0x09` (ASCII Horizontal Tab).
+These work because pressing Enter sends `UnicodeChar = 0x0D`, which equals `KEY_ENTER`. Pressing Backspace sends `0x08`, which equals `KEY_BS`. We don't need any translation for these — the UEFI values and our constants are the same.
 
-Why do these keys have ASCII values at all? Because they're control characters — the original ASCII standard reserved codes 0x00 through 0x1F for control purposes. When you press Enter on a terminal, it sends the byte `0x0D`. When you press Backspace, it sends `0x08`. These conventions date back to teletypes in the 1960s and are still with us today.
+Now the keys that have no ASCII representation:
 
 ```c
 #define KEY_UP      0x80
@@ -133,9 +63,10 @@ Why do these keys have ASCII values at all? Because they're control characters �
 #define KEY_PGUP    0x86
 #define KEY_PGDN    0x87
 #define KEY_DEL     0x88
+#define KEY_INS     0x89
 ```
 
-For keys that don't have ASCII values, we define our own codes starting at `0x80`. Why `0x80`? Because ASCII only uses values 0x00 through 0x7F (it's a 7-bit encoding). Anything at `0x80` or above won't collide with any ASCII character, so we can safely use this range for our special keys.
+We start at `0x80`. Why? ASCII uses only values `0x00` through `0x7F` (it's a 7-bit encoding). Anything at `0x80` or above can't collide with any ASCII character or control code. Callers can safely use a single `switch` statement covering both ASCII characters and our special keys. Insert gets `0x89`, right after Delete — we'll need it once the text editor supports insert/overwrite modes.
 
 ```c
 #define KEY_F1      0x90
@@ -143,46 +74,97 @@ For keys that don't have ASCII values, we define our own codes starting at `0x80
 #define KEY_F3      0x92
 #define KEY_F4      0x93
 #define KEY_F5      0x94
+#define KEY_F6      0x95
+#define KEY_F7      0x96
+#define KEY_F8      0x97
+#define KEY_F9      0x98
 #define KEY_F10     0x99
 ```
 
-Function keys start at `0x90`, leaving room for more navigation keys in the `0x80` range if we need them later. We skip F6-F9 for now — we don't use them yet, and adding them later is trivial.
+Function keys start at `0x90`, leaving room in the `0x80` range for more navigation keys later. We define F1 through F10 — enough for the file browser and editor hotkeys we'll build in later chapters.
+
+## Modifier Flags
+
+Knowing *which* key was pressed is only half the story. A text editor needs to distinguish 'c' (type the letter) from Ctrl+C (copy). That requires modifier state: is Ctrl held? Alt? Shift?
+
+```c
+#define KMOD_CTRL   0x01
+#define KMOD_ALT    0x02
+#define KMOD_SHIFT  0x04
+```
+
+These are bit flags, so they compose naturally. Ctrl+Shift would be `KMOD_CTRL | KMOD_SHIFT`. A caller checking for Ctrl+C writes:
+
+```c
+if (ev.code == 0x03 && (ev.modifiers & KMOD_CTRL))
+```
+
+Where `0x03` is the control character for C (ASCII ETX). We'll see shortly how the keyboard module ensures this works correctly.
+
+## The Key Event
 
 ```c
 struct key_event {
     UINT16 code;     /* ASCII char or KEY_* constant */
     UINT16 scancode; /* raw UEFI scan code */
+    UINT32 modifiers; /* KMOD_* flags (0 if InputEx unavailable) */
 };
 ```
 
-Our key event structure. `code` is the normalized key code — either an ASCII character or one of our `KEY_*` constants. The caller only needs to check this one field.
+The caller only needs to check `code` for basic input. It's either a printable ASCII character ('A', '5', ' ') or one of our `KEY_*` constants. One field instead of two.
 
-`scancode` preserves the raw UEFI scan code, in case the caller needs it for something we haven't anticipated. This is a common pattern in input handling: normalize the common case but keep the raw data available.
+We also preserve the raw `scancode` in case a caller needs it for something we haven't anticipated. This is a common pattern: normalize the common case but keep the raw data available.
 
-Both fields are `UINT16` because UEFI's key values are 16-bit. The structure totals 4 bytes — small enough to pass by value, but we pass it by pointer for consistency with C conventions.
+The `modifiers` field carries `KMOD_*` flags when modifier detection is available. When it isn't (older firmware, or firmware that only supports basic Simple Text Input), modifiers is simply 0. Callers that care about modifiers check the flags; callers that don't can ignore the field entirely. No conditional compilation, no `#ifdef` — just a field that might be zero.
+
+## Two Ways to Read
 
 ```c
 int kbd_poll(struct key_event *ev);
 void kbd_wait(struct key_event *ev);
-```
 
-Two functions, two modes of operation:
-
-- `kbd_poll` checks if a key is available without blocking. Returns nonzero if a key was read, zero if not. This is for situations where you want to check for input while doing other work (like animation or periodic updates).
-
-- `kbd_wait` blocks until a key is pressed. The CPU goes idle while waiting. This is for situations where there's nothing to do until the user types something — which is most of the time in our Phase 1 application.
-
-```c
 #endif /* KBD_H */
 ```
 
-### The Implementation: kbd.c
+- **`kbd_poll`** — non-blocking. Returns 1 if a key was read, 0 if not. For situations where you're doing other work between input checks.
+- **`kbd_wait`** — blocking. Suspends the CPU until a key arrives. For situations where there's nothing to do until the user types.
+
+## SimpleTextInputEx: Getting Modifier State
+
+Before we get to the translation table, we need to solve the modifier problem. UEFI actually has two keyboard protocols:
+
+1. **Simple Text Input** (`EFI_SIMPLE_TEXT_INPUT_PROTOCOL`) — what we've been using. Gives us `ScanCode` and `UnicodeChar`. No modifier state.
+2. **Simple Text Input Ex** (`EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL`) — the extended version. Same key data, plus a `KeyState` structure that includes `KeyShiftState` — a bitmask telling us exactly which modifier keys are held.
+
+The "Ex" protocol isn't guaranteed to exist. Some firmware implements it, some doesn't. Real hardware almost always has it; some minimal UEFI implementations might not. So we try once, cache the result, and fall back gracefully.
+
+Create `src/kbd.c`:
 
 ```c
 #include "kbd.h"
+
+/* SimpleTextInputEx protocol — try once, cache result */
+static EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *s_inputex;
+static int s_inputex_tried;
+
+static EFI_GUID s_inputex_guid = EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID;
+
+static void try_inputex(void) {
+    if (s_inputex_tried)
+        return;
+    s_inputex_tried = 1;
+    EFI_STATUS status = g_boot.bs->LocateProtocol(
+        &s_inputex_guid, NULL, (void **)&s_inputex);
+    if (EFI_ERROR(status))
+        s_inputex = NULL;
+}
 ```
 
-One include — `kbd.h` already pulls in `boot.h` for the UEFI types and `g_boot` global.
+`try_inputex` uses `LocateProtocol` to find the InputEx protocol. We call it at most once — `s_inputex_tried` ensures we don't repeat the lookup on every keystroke. If the protocol isn't available, `s_inputex` stays NULL and we use the basic protocol from `ConIn` instead.
+
+This is a pattern worth noting: try the better interface, cache whether it exists, fall back to the simpler one. No error messages, no degraded mode warnings. The user doesn't need to know which protocol their firmware supports — the keyboard just works either way.
+
+## The Translation Table
 
 ```c
 static UINT16 scan_to_key(UINT16 scan) {
@@ -193,6 +175,7 @@ static UINT16 scan_to_key(UINT16 scan) {
     case 0x04: return KEY_LEFT;
     case 0x05: return KEY_HOME;
     case 0x06: return KEY_END;
+    case 0x07: return KEY_INS;
     case 0x08: return KEY_DEL;
     case 0x09: return KEY_PGUP;
     case 0x0A: return KEY_PGDN;
@@ -201,6 +184,10 @@ static UINT16 scan_to_key(UINT16 scan) {
     case 0x0D: return KEY_F3;
     case 0x0E: return KEY_F4;
     case 0x0F: return KEY_F5;
+    case 0x10: return KEY_F6;
+    case 0x11: return KEY_F7;
+    case 0x12: return KEY_F8;
+    case 0x13: return KEY_F9;
     case 0x14: return KEY_F10;
     case 0x17: return KEY_ESC;
     default:   return KEY_NONE;
@@ -208,105 +195,153 @@ static UINT16 scan_to_key(UINT16 scan) {
 }
 ```
 
-This function translates UEFI scan codes into our `KEY_*` constants. It's a simple lookup — nothing clever.
+A simple lookup from UEFI scan codes to our key codes. The `static` keyword means this function is only visible within `kbd.c` — callers use `kbd_poll` and `kbd_wait` instead.
 
-The `static` keyword means this function is only visible within `kbd.c`. Callers use `kbd_poll` and `kbd_wait` instead. The translation is an internal detail they shouldn't depend on.
+We map all the keys we defined: navigation keys, Insert, Delete, F1 through F10, and the alternate ESC scan code. Unrecognized scan codes fall through to `default` and return `KEY_NONE`. The caller ignores `KEY_NONE`. This means unknown keys are silently dropped — no crash, no garbage on screen.
 
-Notice that we don't have entries for every UEFI scan code. `0x07` (Insert) is missing because we don't need it yet. Unknown scan codes fall through to the `default` case and return `KEY_NONE`, which the caller ignores. This means if a user presses a key we don't handle, it's silently dropped — which is exactly what we want. No crash, no garbage on screen, just nothing happens.
+## Translating Modifier State
+
+The InputEx protocol gives us `KeyState.KeyShiftState`, a UEFI-defined bitmask with flags like `EFI_LEFT_CONTROL_PRESSED`, `EFI_RIGHT_CONTROL_PRESSED`, and so on. We collapse left/right variants into our simpler `KMOD_*` flags:
+
+```c
+static UINT32 shift_to_modifiers(UINT32 shift_state) {
+    UINT32 mods = 0;
+    if (!(shift_state & EFI_SHIFT_STATE_VALID))
+        return 0;
+    if (shift_state & (EFI_LEFT_CONTROL_PRESSED | EFI_RIGHT_CONTROL_PRESSED))
+        mods |= KMOD_CTRL;
+    if (shift_state & (EFI_LEFT_ALT_PRESSED | EFI_RIGHT_ALT_PRESSED))
+        mods |= KMOD_ALT;
+    if (shift_state & (EFI_LEFT_SHIFT_PRESSED | EFI_RIGHT_SHIFT_PRESSED))
+        mods |= KMOD_SHIFT;
+    return mods;
+}
+```
+
+Note the `EFI_SHIFT_STATE_VALID` check. UEFI sets this bit to indicate that the shift state data is actually meaningful. If it's not set, we return 0 — no modifiers — rather than interpreting garbage data.
+
+We don't distinguish left Ctrl from right Ctrl. For a text editor, it doesn't matter. One modifier flag is simpler for callers and covers every use case we'll encounter.
+
+## Polling
 
 ```c
 int kbd_poll(struct key_event *ev) {
-    EFI_INPUT_KEY key;
-    EFI_STATUS status;
+    try_inputex();
 
-    status = g_boot.st->ConIn->ReadKeyStroke(g_boot.st->ConIn, &key);
-    if (EFI_ERROR(status)) {
-        ev->code = KEY_NONE;
-        ev->scancode = 0;
-        return 0;
+    if (s_inputex) {
+        EFI_KEY_DATA kd;
+        EFI_STATUS status = s_inputex->ReadKeyStrokeEx(s_inputex, &kd);
+        if (EFI_ERROR(status)) {
+            ev->code = KEY_NONE;
+            ev->scancode = 0;
+            ev->modifiers = 0;
+            return 0;
+        }
+        ev->scancode = kd.Key.ScanCode;
+        ev->modifiers = shift_to_modifiers(kd.KeyState.KeyShiftState);
+        if (kd.Key.UnicodeChar != 0) {
+            ev->code = (UINT16)kd.Key.UnicodeChar;
+```
+
+When InputEx is available, we use `ReadKeyStrokeEx` instead of `ReadKeyStroke`. It fills an `EFI_KEY_DATA` structure that contains both the key itself (`kd.Key`, same `ScanCode`/`UnicodeChar` pair) and the key state (`kd.KeyState`, with shift state flags). We translate the key the same way as before, but now we also populate `ev->modifiers`.
+
+Here's where things get interesting:
+
+```c
+            /* Normalize Ctrl+letter to control character.
+               Some firmware returns 'c' + CTRL flag instead of 0x03. */
+            if ((ev->modifiers & KMOD_CTRL) &&
+                ev->code >= 'a' && ev->code <= 'z')
+                ev->code = ev->code - 'a' + 1;
+            else if ((ev->modifiers & KMOD_CTRL) &&
+                     ev->code >= 'A' && ev->code <= 'Z')
+                ev->code = ev->code - 'A' + 1;
+```
+
+This is a critical normalization step. With basic SimpleTextInput, pressing Ctrl+C produces `UnicodeChar = 0x03` — the ASCII control character ETX. The firmware does the translation for us. But with SimpleTextInputEx, some firmware takes a different approach: it returns `UnicodeChar = 'c'` (the literal letter) plus the `KMOD_CTRL` modifier flag. It's telling you "the user pressed C while holding Ctrl" and leaving interpretation to you.
+
+Both representations are valid, but our callers shouldn't have to handle both. So we normalize: when Ctrl is held and the character is a letter, we convert it to the corresponding control character. `'a'` becomes 1 (Ctrl+A, SOH), `'c'` becomes 3 (Ctrl+C, ETX), `'z'` becomes 26 (Ctrl+Z, SUB). The formula `char - 'a' + 1` maps the alphabet onto control codes 1-26, which is how ASCII was designed — this isn't an arbitrary encoding, it's the original intent of the control character range.
+
+We handle both cases (lowercase 'a'-'z' and uppercase 'A'-'Z') because the firmware might send either depending on whether it already applied the Shift modifier.
+
+This normalization is what makes Ctrl+C, Ctrl+V, Ctrl+X, and Ctrl+K work correctly in the text editor. Without it, the editor would see a literal 'c' and type the letter instead of copying.
+
+```c
+        } else {
+            ev->code = scan_to_key(kd.Key.ScanCode);
+        }
+        return 1;
     }
 ```
 
-`kbd_poll` starts by calling `ReadKeyStroke`. Remember, this function is non-blocking — it returns immediately. If no key is available, `status` will be `EFI_NOT_READY`.
+If `UnicodeChar` is zero, it's a special key (arrow, function key, etc.) — we translate through `scan_to_key` as before.
 
-On failure (no key), we zero out the event structure and return 0. Zeroing the structure is defensive: even though the caller should check the return value, a zeroed event is harmless if they accidentally read it.
+When InputEx is unavailable, we fall back to the basic protocol:
 
 ```c
-    ev->scancode = key.ScanCode;
-
-    if (key.UnicodeChar != 0) {
-        ev->code = (UINT16)key.UnicodeChar;
-    } else {
-        ev->code = scan_to_key(key.ScanCode);
+    /* Fallback: basic SimpleTextInput */
+    EFI_INPUT_KEY key;
+    EFI_STATUS status = g_boot.st->ConIn->ReadKeyStroke(g_boot.st->ConIn, &key);
+    if (EFI_ERROR(status)) {
+        ev->code = KEY_NONE;
+        ev->scancode = 0;
+        ev->modifiers = 0;
+        return 0;
     }
 
+    ev->scancode = key.ScanCode;
+    ev->modifiers = 0;
+    if (key.UnicodeChar != 0)
+        ev->code = (UINT16)key.UnicodeChar;
+    else
+        ev->code = scan_to_key(key.ScanCode);
     return 1;
 }
 ```
 
-When we do get a key, we first save the raw scan code. Then we determine the normalized key code:
+Same logic as before, but `modifiers` is always 0. With basic SimpleTextInput, Ctrl+C still works — the firmware returns `UnicodeChar = 0x03` directly, and our callers can check `ev.code == 0x03`. They just can't distinguish "user typed Ctrl+C" from "user somehow typed the ETX character directly." In practice this distinction never matters.
 
-- If `UnicodeChar` is nonzero, the user pressed a normal key (letter, number, symbol, or a control character like Enter or Backspace). We use the Unicode character directly as the key code. Since our `KEY_ESC`, `KEY_ENTER`, `KEY_BS`, and `KEY_TAB` constants match their ASCII values, this works seamlessly — pressing Enter gives us `UnicodeChar = 0x0D`, which equals `KEY_ENTER`.
-
-- If `UnicodeChar` is zero, the user pressed a special key (arrow, function key, etc.). We translate the scan code through `scan_to_key`.
-
-The cast `(UINT16)` on `key.UnicodeChar` is technically unnecessary since `CHAR16` and `UINT16` are both 16-bit types, but it makes the intent explicit: we're treating this as a numeric code, not a character.
-
-We return 1 to indicate "yes, a key was read."
+## Blocking Wait
 
 ```c
 void kbd_wait(struct key_event *ev) {
+    try_inputex();
+
+    EFI_EVENT wait_event;
+    if (s_inputex)
+        wait_event = s_inputex->WaitForKeyEx;
+    else
+        wait_event = g_boot.st->ConIn->WaitForKey;
+
     UINTN index;
-    g_boot.bs->WaitForEvent(1, &g_boot.st->ConIn->WaitForKey, &index);
+    g_boot.bs->WaitForEvent(1, &wait_event, &index);
     kbd_poll(ev);
 }
 ```
 
-`kbd_wait` is elegantly simple. It does two things:
+Similar to before, but now we pick the right event to wait on. If InputEx is available, we wait on `WaitForKeyEx`; otherwise, `WaitForKey`. Then we call `kbd_poll` to read and normalize the key. We reuse `kbd_poll` instead of duplicating the translation logic — including the Ctrl+letter normalization.
 
-1. **Block until a key is available.** `WaitForEvent` suspends execution until the `WaitForKey` event fires. The `1` means we're waiting on exactly one event. `&index` receives which event fired (always 0 since we only have one).
+The `1` is the event count. `&index` receives which event fired (always 0 since we only pass one). While waiting, the CPU goes idle — much better than spinning in a loop checking "any key yet?"
 
-2. **Read the key.** Once `WaitForEvent` returns, we know a key is available, so we call `kbd_poll` to read it. Since we just got notified that a key is ready, `kbd_poll` will always succeed here.
+## The Complete Module
 
-Why not call `ReadKeyStroke` directly instead of going through `kbd_poll`? Because `kbd_poll` handles the normalization (Unicode character vs. scan code). If we called `ReadKeyStroke` directly, we'd duplicate that logic. By calling `kbd_poll`, we keep the translation in one place.
+That's all of `kbd.c` — about 120 lines, up from the minimal version because of InputEx support and Ctrl normalization. The complete `kbd.h` is 51 lines. Still small, but the abstraction now handles quite a lot:
 
-## Polling vs. Blocking: When to Use Which
+1. **Callers check one field** (`ev.code`) instead of two (`ScanCode` and `UnicodeChar`).
+2. **Modifier state is available** when the firmware supports it, zero when it doesn't. No conditional compilation needed.
+3. **Ctrl+letter is normalized.** Callers always see control characters (0x01-0x1A), never raw letters with a modifier flag. This makes keyboard shortcuts work consistently regardless of which UEFI protocol provided the data.
+4. **Key codes are stable.** If we later replace UEFI input with a bare-metal USB HID driver, we change `kbd.c` and nothing else.
+5. **Unknown keys are safe.** Unrecognized input produces `KEY_NONE`, which callers ignore.
 
-Our keyboard module offers two styles of input:
+## What We Have
 
-**Blocking (`kbd_wait`)** — The CPU sleeps until a key is pressed. Advantages:
-- Zero CPU usage while waiting
-- Simplest code — call `kbd_wait`, process key, repeat
-- Perfect when there's nothing else to do
+```
+src/boot.h   — Global state with framebuffer fields
+src/mem.h/c  — Memory allocation and utilities
+src/font.h/c — 8x16 bitmap font
+src/fb.h/c   — Framebuffer driver
+src/kbd.h/c  — Keyboard input with modifier detection
+src/main.c   — Entry point (still using console loop)
+```
 
-**Polling (`kbd_poll`)** — Check once and return immediately. Advantages:
-- Can do other work between checks (animation, timers, background tasks)
-- Essential for responsive UI that needs to update even without input
-- Can check multiple input sources
-
-In Phase 1, we use blocking mode exclusively. Our application has nothing to do between keystrokes — no cursor blinking, no clock display, no background processing. Blocking mode keeps the code simple and the CPU cool (literally — an idle CPU consumes much less power).
-
-In later phases, when we have a blinking cursor, a status bar with a clock, or multiple windows that might need updating, we'll switch to polling mode with a timer-based event loop.
-
-## Why an Abstraction Layer?
-
-You might wonder: `kbd.c` is only 52 lines. The translation function and the poll/wait functions are straightforward wrappers. Why bother with the abstraction?
-
-Three reasons:
-
-**1. Consistent interface.** Without the abstraction, every piece of code that reads keyboard input would need to deal with the UEFI dual-field (ScanCode / UnicodeChar) system. With it, callers just check `ev.code` against our `KEY_*` constants. One field instead of two.
-
-**2. Decoupling from UEFI.** If we later replace the UEFI keyboard driver with a bare-metal USB HID driver (Phase 9 in our roadmap), we change `kbd.c` and nothing else. Every caller keeps using `kbd_poll` and `kbd_wait` with the same `key_event` structure.
-
-**3. Defensive defaults.** Our abstraction guarantees that unrecognized keys produce `KEY_NONE` instead of raw scan codes that calling code might misinterpret. It's a single place to filter and sanitize input.
-
-## Key Takeaways
-
-- UEFI provides keyboard input through the Simple Text Input Protocol at `SystemTable->ConIn`
-- Keys arrive as either a Unicode character (for normal keys) or a scan code (for special keys)
-- `WaitForEvent` blocks efficiently — the CPU goes idle instead of spinning in a busy loop
-- We normalize UEFI's two-field key representation into a single code field
-- Our `KEY_*` constants use 0x80+ to avoid collisions with ASCII
-- The abstraction layer is thin but provides consistency, decoupling, and safety
-
-Next: wiring everything together into a working application.
+We now have all the pieces: screen output (framebuffer), text rendering (font), and input (keyboard with modifier awareness). The next chapter wires them together into a working application with a framebuffer-based main loop.

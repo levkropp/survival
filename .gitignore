@@ -1,3 +1,4 @@
 build/
 tools/gnu-efi/
 .claude/
+*.iso

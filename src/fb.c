@@ -21,8 +21,11 @@ EFI_STATUS fb_init(void) {
     if (g_boot.framebuffer == NULL || g_boot.fb_size == 0)
         return EFI_UNSUPPORTED;
 
-    g_boot.cols = g_boot.fb_width / FONT_WIDTH;
-    g_boot.rows = g_boot.fb_height / FONT_HEIGHT;
+    /* Auto-detect scale: 2x for screens wider than 1920 pixels */
+    g_boot.scale = (g_boot.fb_width > 1920) ? 2 : 1;
+
+    g_boot.cols = g_boot.fb_width / (FONT_WIDTH * g_boot.scale);
+    g_boot.rows = g_boot.fb_height / (FONT_HEIGHT * g_boot.scale);
     g_boot.cursor_x = 0;
     g_boot.cursor_y = 0;
 
@@ -55,15 +58,41 @@ void fb_char(UINT32 cx, UINT32 cy, char c, UINT32 fg, UINT32 bg) {
     if (c < FONT_FIRST || c > FONT_LAST)
         c = '?';
 
-    UINT32 px = cx * FONT_WIDTH;
-    UINT32 py = cy * FONT_HEIGHT;
-    const UINT8 *glyph = font_data[c - FONT_FIRST];
+    UINT32 scale = g_boot.scale;
+    UINT32 cw = FONT_WIDTH * scale;
+    UINT32 ch = FONT_HEIGHT * scale;
+    UINT32 px = cx * cw;
+    UINT32 py = cy * ch;
 
-    for (UINT32 row = 0; row < FONT_HEIGHT; row++) {
-        UINT8 bits = glyph[row];
-        for (UINT32 col = 0; col < FONT_WIDTH; col++) {
-            UINT32 color = (bits & (0x80 >> col)) ? fg : bg;
-            fb_pixel(px + col, py + row, color);
+    if (px + cw > g_boot.fb_width || py + ch > g_boot.fb_height)
+        return;
+
+    const UINT8 *glyph = font_data[c - FONT_FIRST];
+    UINT32 pitch = g_boot.fb_pitch;
+    UINT32 *base = g_boot.framebuffer + py * pitch + px;
+
+    if (scale == 1) {
+        for (UINT32 row = 0; row < FONT_HEIGHT; row++) {
+            UINT8 bits = glyph[row];
+            UINT32 *dst = base;
+            for (UINT32 col = 0; col < FONT_WIDTH; col++)
+                *dst++ = (bits & (0x80 >> col)) ? fg : bg;
+            base += pitch;
+        }
+    } else {
+        /* 2x: write 2 pixels wide, 2 rows at once per font row */
+        for (UINT32 row = 0; row < FONT_HEIGHT; row++) {
+            UINT8 bits = glyph[row];
+            UINT32 *dst = base;
+            for (UINT32 col = 0; col < FONT_WIDTH; col++) {
+                UINT32 color = (bits & (0x80 >> col)) ? fg : bg;
+                dst[0] = color;
+                dst[1] = color;
+                dst[pitch] = color;
+                dst[pitch + 1] = color;
+                dst += 2;
+            }
+            base += pitch * 2;
         }
     }
 }
@@ -83,7 +112,7 @@ void fb_string(UINT32 cx, UINT32 cy, const char *s, UINT32 fg, UINT32 bg) {
 }
 
 void fb_scroll(void) {
-    UINT32 scroll_rows = FONT_HEIGHT;
+    UINT32 scroll_rows = FONT_HEIGHT * g_boot.scale;
 
     for (UINT32 y = 0; y < g_boot.fb_height - scroll_rows; y++) {
         mem_copy(&g_boot.framebuffer[y * g_boot.fb_pitch],

@@ -3,7 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUILD_DIR="$PROJECT_DIR/build"
+BUILD_DIR="$PROJECT_DIR/build/aarch64"
 ESP_DIR="$BUILD_DIR/esp"
 
 # Find UEFI firmware
@@ -36,19 +36,28 @@ cp "$FIRMWARE" "$FW_COPY"
 truncate -s 64M "$FW_COPY"
 dd if=/dev/zero of="$VARS" bs=1M count=64 2>/dev/null
 
-# Create disk image
+# Create disk image with all files from ESP directory
 IMG="$BUILD_DIR/disk.img"
 dd if=/dev/zero of="$IMG" bs=1M count=64 2>/dev/null
 mkfs.vfat -F 32 "$IMG" >/dev/null 2>&1
-mmd -i "$IMG" "::EFI"
-mmd -i "$IMG" "::EFI/BOOT"
-mcopy -i "$IMG" "$ESP_DIR/EFI/BOOT/BOOTAA64.EFI" "::EFI/BOOT/BOOTAA64.EFI"
+# Recursively copy everything from build/esp/ onto the FAT32 image
+mcopy -i "$IMG" -s "$ESP_DIR"/* ::/
 
 MODE="${1:-graphical}"
+
+# Always recreate test USB drive image (prevents stale cloned data from
+# causing UEFI to boot from USB instead of the boot disk)
+USB_IMG="/tmp/survival_usb_test.img"
+echo "Creating test USB drive image..."
+dd if=/dev/zero of="$USB_IMG" bs=1M count=128 2>/dev/null
+mkfs.vfat -F 32 -n TESTUSB "$USB_IMG" >/dev/null 2>&1
+echo "# Test USB Drive" | mcopy -i "$USB_IMG" - ::/README.MD
+USB_ARGS="-drive if=none,id=usbdisk,format=raw,file=$USB_IMG -device usb-storage,drive=usbdisk,removable=on"
 
 echo "=== Survival Workstation - QEMU ==="
 echo "Mode: $MODE"
 echo "Firmware: $FIRMWARE"
+echo "USB: $USB_IMG"
 echo "==================================="
 
 case "$MODE" in
@@ -63,6 +72,7 @@ case "$MODE" in
             -hda "$IMG" \
             -device ramfb \
             -device qemu-xhci -device usb-kbd -device usb-mouse \
+            $USB_ARGS \
             -serial stdio
         ;;
     console|serial)
@@ -75,6 +85,7 @@ case "$MODE" in
             -hda "$IMG" \
             -device virtio-gpu-pci \
             -device qemu-xhci -device usb-kbd \
+            $USB_ARGS \
             -display none \
             -serial mon:stdio
         ;;
@@ -89,6 +100,7 @@ case "$MODE" in
             -hda "$IMG" \
             -device ramfb \
             -device qemu-xhci -device usb-kbd -device usb-mouse \
+            $USB_ARGS \
             -display vnc=:0 \
             -serial stdio
         ;;

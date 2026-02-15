@@ -24,6 +24,7 @@ struct boot_state {
     UINT32 cursor_y; /* row in characters */
     UINT32 cols;     /* max columns */
     UINT32 rows;     /* max rows */
+    UINT32 scale;    /* font scale factor (1 or 2) */
 };
 
 extern struct boot_state g_boot;
@@ -38,5 +39,7 @@ extern struct boot_state g_boot;
 #define COLOR_CYAN    0x00FFFF00
 #define COLOR_GRAY    0x00808080
 #define COLOR_DGRAY   0x00404040
+#define COLOR_ORANGE  0x00FFA500
+#define COLOR_MAGENTA 0x00FF00FF
 
 #endif /* BOOT_H */

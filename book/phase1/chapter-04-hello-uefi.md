@@ -1,270 +1,139 @@
 # Chapter 4: Hello, UEFI
 
-## The Global State
+## The Bare Minimum
 
-Before we write our entry point, we need to decide how our program will access UEFI services. Every subsystem — framebuffer, keyboard, memory — needs access to the UEFI System Table. We could pass it as a parameter to every function, but that gets tedious. Instead, we'll store it in a global structure that any part of our code can access.
+Let's write our first line of code. Not a plan, not a diagram — actual C that compiles and runs on a bare machine. We'll start with the absolute simplest program that does something visible, and build up from there.
 
-This is `src/boot.h`:
+A UEFI application needs an entry point. The firmware calls this function when it loads our binary:
 
 ```c
-#ifndef BOOT_H
-#define BOOT_H
+EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
+    return EFI_SUCCESS;
+}
 ```
 
-These are **include guards**. They prevent the file from being included twice in the same compilation unit. If `main.c` includes `boot.h` and also includes `fb.h` which itself includes `boot.h`, without guards the compiler would see all the definitions twice and report errors. The `#ifndef` / `#define` / `#endif` pattern ensures the contents are only processed once.
+That's a valid UEFI application. It does nothing and immediately returns. The firmware loaded us, we said "thanks, I'm done," and it continues the boot process.
+
+But where do `EFI_STATUS`, `EFI_HANDLE`, and `EFI_SYSTEM_TABLE` come from? These are UEFI types defined in the gnu-efi headers. We need to include them. Create a file called `src/main.c`:
 
 ```c
 #include <efi.h>
 #include <efilib.h>
-```
 
-These are the gnu-efi headers. `efi.h` defines the core UEFI types:
-- `EFI_STATUS` — a return code (success or error)
-- `EFI_HANDLE` — an opaque pointer representing a UEFI object
-- `EFI_SYSTEM_TABLE` — the master structure we discussed in Chapter 2
-- `UINT32`, `UINT64`, `UINTN` — fixed-size integer types
-- `CHAR16` — a 16-bit Unicode character (UEFI uses UTF-16)
-
-`efilib.h` provides helper functions and macros for working with UEFI.
-
-```c
-struct boot_state {
-    EFI_HANDLE image_handle;
-    EFI_SYSTEM_TABLE *st;
-    EFI_BOOT_SERVICES *bs;
-    EFI_RUNTIME_SERVICES *rs;
-```
-
-This is our global state structure. We store:
-
-- **`image_handle`** — The handle for our loaded image. Some UEFI functions need this to know who's calling.
-- **`st`** — Pointer to the System Table. The root of everything.
-- **`bs`** — Pointer to Boot Services. We extract this from the System Table for convenience. Boot Services provides memory allocation, protocol lookup, event handling, and more. These services are only available before `ExitBootServices()` is called.
-- **`rs`** — Pointer to Runtime Services. Provides the system clock, shutdown/reboot, and persistent variables. These remain available even after `ExitBootServices()`.
-
-```c
-    /* Graphics */
-    EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
-    UINT32 *framebuffer;
-    UINT32 fb_width;
-    UINT32 fb_height;
-    UINT32 fb_pitch;
-    UINTN fb_size;
-```
-
-Graphics state. We'll fill these in when we initialize the framebuffer in Chapter 6. Key concepts:
-
-- **`gop`** — The Graphics Output Protocol interface.
-- **`framebuffer`** — A pointer to the pixel data in memory. Each pixel is a 32-bit value (8 bits each for blue, green, red, and a reserved byte). Writing to this memory changes what appears on screen.
-- **`fb_width` / `fb_height`** — Screen resolution in pixels.
-- **`fb_pitch`** — The number of pixels per horizontal scan line. This is often equal to `fb_width`, but can be larger if the hardware requires padding at the end of each row. Always use `pitch` (not `width`) when calculating pixel offsets.
-- **`fb_size`** — Total size of the framebuffer in bytes.
-
-```c
-    /* Text cursor state */
-    UINT32 cursor_x;
-    UINT32 cursor_y;
-    UINT32 cols;
-    UINT32 rows;
-};
-```
-
-We'll render text using a bitmap font (Chapter 6). These track the cursor position in **character coordinates** — column and row, not pixels. `cols` and `rows` are the maximum: the screen width divided by font width, and height divided by font height.
-
-```c
-extern struct boot_state g_boot;
-```
-
-The `extern` keyword says: "this variable exists somewhere, but it's defined in another file." The actual definition is in `main.c`:
-
-```c
-struct boot_state g_boot;
-```
-
-Without `extern`, every file that includes `boot.h` would try to create its own copy of `g_boot`, and the linker would complain about duplicate symbols.
-
-```c
-#define COLOR_BLACK   0x00000000
-#define COLOR_WHITE   0x00FFFFFF
-#define COLOR_GREEN   0x0000FF00
-#define COLOR_RED     0x00FF0000
-#define COLOR_BLUE    0x000000FF
-#define COLOR_YELLOW  0x0000FFFF
-#define COLOR_CYAN    0x00FFFF00
-#define COLOR_GRAY    0x00808080
-#define COLOR_DGRAY   0x00404040
-```
-
-Color constants. Each is a 32-bit value in **BGRX** format:
-- Bits 0-7: Blue
-- Bits 8-15: Green
-- Bits 16-23: Red
-- Bits 24-31: Reserved (usually zero)
-
-This is the most common pixel format for UEFI GOP framebuffers. Note that it's BGR, not RGB — blue comes first in memory. So "pure red" is `0x00FF0000` (red in the third byte), and "pure blue" is `0x000000FF` (blue in the first byte).
-
-Why BGR? It's a convention inherited from early VGA hardware. The UEFI specification calls this format `PixelBlueGreenRedReserved8BitPerColor`.
-
-## The Entry Point
-
-Now let's look at `src/main.c`. This is the heart of our application.
-
-```c
-#include "boot.h"
-#include "fb.h"
-#include "kbd.h"
-#include "mem.h"
-
-struct boot_state g_boot;
-```
-
-We include our headers and define the global state variable. Remember, `boot.h` declared it with `extern`; here we provide the actual storage.
-
-### A Helper Function
-
-```c
-static void con_print(const CHAR16 *s) {
-    g_boot.st->ConOut->OutputString(g_boot.st->ConOut, (CHAR16 *)s);
+EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
+    return EFI_SUCCESS;
 }
 ```
 
-This is a convenience wrapper for printing to the UEFI text console. Let's unpack the UEFI call:
+`efi.h` defines the core UEFI types:
+- `EFI_STATUS` — a return code (success or error)
+- `EFI_HANDLE` — an opaque pointer representing a UEFI object
+- `EFI_SYSTEM_TABLE` — the master structure from Chapter 2
+- `UINT32`, `UINT64`, `UINTN` — fixed-size integer types
+- `CHAR16` — a 16-bit Unicode character (UEFI uses UTF-16)
 
-- `g_boot.st` — Our System Table pointer
-- `->ConOut` — The console output protocol (type `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *`)
-- `->OutputString(...)` — A function pointer in that protocol
+`efilib.h` provides helper macros like `EFI_ERROR()`.
 
-The first argument to `OutputString` is the protocol itself (`g_boot.st->ConOut`). This is how UEFI does object-oriented programming in C: the "object" is passed as the first parameter to its own methods. It's like `self` in Python or `this` in C++.
+The two parameters UEFI gives us are important. `image_handle` is an ID representing our loaded application — some UEFI functions need it to know who's calling. `st` is a pointer to the System Table, which is our gateway to every service the firmware provides.
 
-`CHAR16 *` is a pointer to UTF-16 encoded text. The `L"..."` syntax in C creates a wide string literal. With our `-fshort-wchar` compiler flag, each character is 16 bits — matching UEFI's expectations.
+This compiles, but it does nothing visible. Let's fix that.
 
-The cast `(CHAR16 *)` discards the `const` qualifier because UEFI's `OutputString` function signature doesn't use `const` (a minor oversight in the specification).
+## Printing to the Console
 
-The `static` keyword means this function is only visible within `main.c`. Other files can't call it. This is good practice for helper functions that don't need external visibility.
-
-### The Main Function
+The System Table has a field called `ConOut` — the console output protocol. Through it, we can print text:
 
 ```c
+#include <efi.h>
+#include <efilib.h>
+
 EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
-    EFI_STATUS status;
-    int have_fb = 0;
+    st->ConOut->OutputString(st->ConOut, L"Hello from UEFI!\r\n");
+    return EFI_SUCCESS;
+}
 ```
 
-This is where UEFI calls us. The return type `EFI_STATUS` is a UEFI status code. `EFI_SUCCESS` (0) means everything went well; any other value is an error code.
+Let's unpack this call:
 
-`have_fb` tracks whether we successfully initialized a framebuffer. If not, we'll fall back to console-only mode.
+- `st->ConOut` — a pointer to the console output protocol (type `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *`)
+- `->OutputString(...)` — a function pointer in that protocol that prints text
 
-```c
-    g_boot.image_handle = image_handle;
-    g_boot.st = st;
-    g_boot.bs = st->BootServices;
-    g_boot.rs = st->RuntimeServices;
+The first argument to `OutputString` is the protocol itself (`st->ConOut`). This looks redundant, but it's how UEFI does object-oriented programming in C. The "object" is passed as the first parameter to its own methods — like `self` in Python or `this` in C++.
+
+`L"Hello from UEFI!\r\n"` is a wide string literal. The `L` prefix makes each character 16 bits wide. With our `-fshort-wchar` compiler flag from Chapter 3, C's `wchar_t` is 16 bits, matching UEFI's `CHAR16` type.
+
+The `\r\n` is carriage-return plus line-feed. UEFI follows the Windows convention of requiring both characters for a newline. If you only use `\n`, the cursor moves down but stays in the same column, producing staircase-shaped text:
+
+```
+Hello
+      from
+            UEFI!
 ```
 
-We stash the UEFI parameters into our global state. From here on, any code in any file can access these through `g_boot`.
+If you build and run this in QEMU, you'll see "Hello from UEFI!" on the serial console. Our code just ran on a bare ARM64 machine. No operating system. No C library. Just us and the firmware.
 
-Extracting `BootServices` and `RuntimeServices` into separate pointers saves us from writing `g_boot.st->BootServices->AllocatePool(...)` every time. Instead, we can write `g_boot.bs->AllocatePool(...)`.
+But this program prints one line and exits. We want a workstation that runs until we tell it to stop.
 
-```c
-    g_boot.bs->SetWatchdogTimer(0, 0, 0, NULL);
-```
+## Staying Alive
 
-UEFI sets a **watchdog timer** that reboots the system if the boot application doesn't finish within 5 minutes. This is a safety feature — if a boot loader hangs, the system reboots. But our application is meant to run indefinitely (it's a workstation, not a boot loader), so we disable it by setting the timeout to 0.
-
-The function signature is:
-```c
-SetWatchdogTimer(UINTN Timeout, UINT64 WatchdogCode, UINTN DataSize, CHAR16 *WatchdogData)
-```
-All zeros means "disable."
+Two problems: our program exits immediately, and UEFI has a watchdog timer that will reboot the system if we run for more than 5 minutes. Let's fix both.
 
 ```c
-    con_print(L"SURVIVAL WORKSTATION: Booting...\r\n");
-```
+#include <efi.h>
+#include <efilib.h>
 
-Our first output! This prints to the UEFI text console, which typically appears both on the HDMI display (if available) and on the serial port. It's useful for debugging because it works even if our framebuffer initialization fails.
+EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
+    st->BootServices->SetWatchdogTimer(0, 0, 0, NULL);
 
-The `\r\n` is a carriage-return + line-feed. UEFI follows the Windows convention of using both characters for a newline. If you only use `\n`, the cursor moves down but stays in the same column, producing staircase-shaped text.
+    st->ConOut->OutputString(st->ConOut, L"SURVIVAL WORKSTATION: Booting...\r\n");
 
-```c
-    mem_init();
-```
-
-Initialize our memory subsystem (Chapter 5). In our current implementation this is a no-op, but having the call here lets us add more complex memory management later without changing `main.c`.
-
-```c
-    status = fb_init();
-    if (!EFI_ERROR(status)) {
-        have_fb = 1;
-        con_print(L"Framebuffer initialized.\r\n");
-    } else {
-        con_print(L"No framebuffer, falling back to console.\r\n");
+    /* Wait forever */
+    for (;;) {
     }
-```
-
-Try to initialize the framebuffer (Chapter 6). `EFI_ERROR()` is a macro that checks if a status code represents an error. If `fb_init()` succeeds, we set `have_fb = 1` and will use framebuffer rendering. Otherwise, we fall back to the simpler UEFI console output.
-
-This fallback is important for testing. In QEMU with `-display none`, there's no real framebuffer — the GOP protocol exists but returns a null framebuffer address. Our console mode lets us test the application logic even without a display.
-
-```c
-    st->ConIn->Reset(st->ConIn, FALSE);
-```
-
-Reset the keyboard input buffer. This clears any keystrokes that might have been buffered during boot. The `FALSE` parameter means "don't run extended diagnostics."
-
-```c
-    if (have_fb)
-        fb_loop();
-    else
-        console_loop();
-```
-
-We enter one of two main loops depending on whether we have a framebuffer. Both loops do the same thing — display a banner, accept keystrokes, echo them to screen, and exit on ESC. They just use different output methods.
-
-```c
-    con_print(L"\r\nShutting down...\r\n");
-    g_boot.bs->Stall(1000000);
-    g_boot.rs->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
 
     return EFI_SUCCESS;
 }
 ```
 
-When the user presses ESC, we:
-
-1. Print a goodbye message
-2. Wait 1 second (`Stall` takes microseconds, so 1,000,000 = 1 second)
-3. Ask the firmware to shut down the system
-
-`ResetSystem` is a Runtime Service. `EfiResetShutdown` means "power off" (as opposed to `EfiResetCold` for reboot or `EfiResetWarm` for a warm reset).
-
-The `return EFI_SUCCESS` at the end is technically unreachable — `ResetSystem` doesn't return. But the compiler doesn't know that, and omitting it would generate a warning.
-
-## The Console Loop
-
-Let's look at the console fallback mode:
+`SetWatchdogTimer` is a Boot Service. The signature is:
 
 ```c
-static void console_loop(void) {
-    print_banner_console();
+SetWatchdogTimer(UINTN Timeout, UINT64 WatchdogCode, UINTN DataSize, CHAR16 *WatchdogData)
+```
+
+Setting `Timeout` to 0 disables the timer entirely. The other parameters don't matter when disabling.
+
+`st->BootServices` gives us the Boot Services table — a collection of functions for memory allocation, protocol lookup, event handling, timers, and more. We'll use it constantly.
+
+The `for (;;)` is an infinite loop. Our program now runs forever (or until we cut power). But it's useless — it prints a message and then burns CPU doing nothing. We need keyboard input.
+
+## Reading a Keystroke
+
+UEFI provides keyboard input through `st->ConIn`, the console input protocol. It has a function called `ReadKeyStroke` and an event called `WaitForKey`:
+
+```c
+    st->ConOut->OutputString(st->ConOut, L"SURVIVAL WORKSTATION: Booting...\r\n");
+    st->ConOut->OutputString(st->ConOut, L"Press any key (ESC to exit)...\r\n");
 
     EFI_INPUT_KEY key;
     UINTN index;
 
     for (;;) {
-        g_boot.bs->WaitForEvent(1, &g_boot.st->ConIn->WaitForKey, &index);
-```
+        st->BootServices->WaitForEvent(1, &st->ConIn->WaitForKey, &index);
 
-`WaitForEvent` is a Boot Service that blocks (pauses execution) until an event fires. We pass it one event: `ConIn->WaitForKey`, which fires when a key is pressed.
-
-The `1` is the number of events to wait for. `&index` receives the index of the event that fired (always 0 in our case since we only pass one event). This is a true block — the CPU goes idle until a key is pressed, saving power.
-
-```c
-        EFI_STATUS status = g_boot.st->ConIn->ReadKeyStroke(g_boot.st->ConIn, &key);
+        EFI_STATUS status = st->ConIn->ReadKeyStroke(st->ConIn, &key);
         if (EFI_ERROR(status))
             continue;
+
+        if (key.ScanCode == 0x17 || key.UnicodeChar == 0x1B)
+            break;
+    }
 ```
 
-After `WaitForEvent` returns, we read the actual keystroke. `ReadKeyStroke` fills in an `EFI_INPUT_KEY` structure:
+`WaitForEvent` is a Boot Service that blocks — it pauses execution until one of the events you pass fires. We pass one event: `ConIn->WaitForKey`, which fires when a key is pressed. The CPU goes idle while waiting, saving power. This is much better than spinning in a tight loop checking "any key yet? any key yet?"
+
+The `1` is the number of events. `&index` receives which event fired (always 0 since we only have one).
+
+After `WaitForEvent` returns, we know a key is available. `ReadKeyStroke` retrieves it into an `EFI_INPUT_KEY` structure:
 
 ```c
 typedef struct {
@@ -273,16 +142,237 @@ typedef struct {
 } EFI_INPUT_KEY;
 ```
 
-For a normal key like 'A', `ScanCode` is 0 and `UnicodeChar` is `'A'`. For a special key like the up arrow, `UnicodeChar` is 0 and `ScanCode` identifies the key.
+For a normal key like 'A', `ScanCode` is 0 and `UnicodeChar` is `'A'`. For a special key like the up arrow, `UnicodeChar` is 0 and `ScanCode` identifies the key. They're mutually exclusive — for any keystroke, exactly one is meaningful.
+
+We check for ESC two ways: scan code `0x17` is UEFI's code for the Escape key, and `0x1B` is the ASCII escape character. Different firmware implementations may set one or the other, so we check both.
+
+But we're not doing anything with non-ESC keys yet. Let's echo them.
+
+## Echoing Characters
 
 ```c
         if (key.ScanCode == 0x17 || key.UnicodeChar == 0x1B)
             break;
+
+        if (key.UnicodeChar == '\r') {
+            st->ConOut->OutputString(st->ConOut, L"\r\n> ");
+        } else if (key.UnicodeChar >= 0x20 && key.UnicodeChar <= 0x7E) {
+            CHAR16 ch[2] = { key.UnicodeChar, 0 };
+            st->ConOut->OutputString(st->ConOut, ch);
+        }
 ```
 
-Check for ESC. Scan code `0x17` is UEFI's code for the Escape key. We also check for the ASCII escape character `0x1B` just in case. Either one exits the loop.
+For Enter (`\r`), we print a newline and a prompt. For printable ASCII characters (space `0x20` through tilde `0x7E`), we echo the character.
+
+There's a subtlety: `OutputString` expects a null-terminated `CHAR16` string, not a single character. We can't just pass the character — we create a 2-element array: the character followed by a null terminator `0`. This is a small annoyance of the UEFI API.
+
+Characters outside the printable range (control characters, extended Unicode) are silently ignored. No crash, no garbage — just nothing happens.
+
+## Shutting Down Cleanly
+
+When the user presses ESC, we should shut down the machine instead of just returning to the firmware:
 
 ```c
+    st->ConOut->OutputString(st->ConOut, L"\r\nShutting down...\r\n");
+    st->BootServices->Stall(1000000);
+    st->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+
+    return EFI_SUCCESS;
+```
+
+`Stall` is a Boot Service that pauses for a given number of microseconds. 1,000,000 microseconds = 1 second. This gives the user a moment to see the goodbye message.
+
+`ResetSystem` is a Runtime Service. `EfiResetShutdown` means "power off" (as opposed to `EfiResetCold` for reboot or `EfiResetWarm` for a warm reset). This function never returns — the hardware powers down.
+
+The `return EFI_SUCCESS` is unreachable but satisfies the compiler's requirement that a non-void function returns a value.
+
+Notice we access `RuntimeServices` separately from `BootServices`. Boot Services handles the runtime operation of our application (memory, events, protocols). Runtime Services handles system-level operations that persist even after the OS takes over (clock, reboot, shutdown, persistent variables).
+
+## The Full Program So Far
+
+Here's everything we have in `src/main.c`:
+
+```c
+#include <efi.h>
+#include <efilib.h>
+
+EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
+    st->BootServices->SetWatchdogTimer(0, 0, 0, NULL);
+
+    st->ConOut->OutputString(st->ConOut, L"SURVIVAL WORKSTATION: Booting...\r\n");
+    st->ConOut->OutputString(st->ConOut, L"Press any key (ESC to shutdown)...\r\n> ");
+
+    st->ConIn->Reset(st->ConIn, FALSE);
+
+    EFI_INPUT_KEY key;
+    UINTN index;
+
+    for (;;) {
+        st->BootServices->WaitForEvent(1, &st->ConIn->WaitForKey, &index);
+
+        EFI_STATUS status = st->ConIn->ReadKeyStroke(st->ConIn, &key);
+        if (EFI_ERROR(status))
+            continue;
+
+        if (key.ScanCode == 0x17 || key.UnicodeChar == 0x1B)
+            break;
+
+        if (key.UnicodeChar == '\r') {
+            st->ConOut->OutputString(st->ConOut, L"\r\n> ");
+        } else if (key.UnicodeChar >= 0x20 && key.UnicodeChar <= 0x7E) {
+            CHAR16 ch[2] = { key.UnicodeChar, 0 };
+            st->ConOut->OutputString(st->ConOut, ch);
+        }
+    }
+
+    st->ConOut->OutputString(st->ConOut, L"\r\nShutting down...\r\n");
+    st->BootServices->Stall(1000000);
+    st->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+
+    return EFI_SUCCESS;
+}
+```
+
+We also added `st->ConIn->Reset(st->ConIn, FALSE)` before the loop. This clears any keystrokes that were buffered during the boot process. The `FALSE` parameter means "don't run extended diagnostics."
+
+This is a complete, working UEFI application. It boots, prints a banner, echoes keystrokes, and shuts down on ESC. But look at how many times we type `st->BootServices->` and `st->ConOut->`. Every single UEFI call goes through the System Table. When we start adding more modules — framebuffer, memory, filesystem — every one of them will need `st`. Passing it around as a parameter to every function is going to get tedious.
+
+## The Global State
+
+Let's introduce a global structure to hold the UEFI pointers. Every module in our application will need access to these, so making them global is the pragmatic choice.
+
+Create a new file, `src/boot.h`:
+
+```c
+#ifndef BOOT_H
+#define BOOT_H
+
+#include <efi.h>
+#include <efilib.h>
+
+struct boot_state {
+    EFI_HANDLE image_handle;
+    EFI_SYSTEM_TABLE *st;
+    EFI_BOOT_SERVICES *bs;
+    EFI_RUNTIME_SERVICES *rs;
+};
+
+extern struct boot_state g_boot;
+
+#endif /* BOOT_H */
+```
+
+Let's go through this line by line.
+
+```c
+#ifndef BOOT_H
+#define BOOT_H
+```
+
+**Include guards.** They prevent the file from being included twice in the same compilation unit. If `main.c` includes `boot.h` and also includes some other header that also includes `boot.h`, without guards the compiler would see all the definitions twice and complain about redefinitions. The `#ifndef` / `#define` / `#endif` pattern ensures the contents are processed only once.
+
+```c
+#include <efi.h>
+#include <efilib.h>
+```
+
+We pull in the UEFI type definitions here, so any file that includes `boot.h` automatically gets access to them.
+
+```c
+struct boot_state {
+    EFI_HANDLE image_handle;
+    EFI_SYSTEM_TABLE *st;
+    EFI_BOOT_SERVICES *bs;
+    EFI_RUNTIME_SERVICES *rs;
+};
+```
+
+Our global state structure. Right now it has exactly four fields — the four things we extracted from `efi_main`'s parameters:
+
+- **`image_handle`** — The handle for our loaded image. Some UEFI functions need this to know who's calling.
+- **`st`** — Pointer to the System Table. The root of everything.
+- **`bs`** — Pointer to Boot Services. We extract this from `st->BootServices` for convenience. Instead of `st->BootServices->SetWatchdogTimer(...)`, we write `g_boot.bs->SetWatchdogTimer(...)`.
+- **`rs`** — Pointer to Runtime Services. Extracted from `st->RuntimeServices`. Provides shutdown, reboot, and the system clock.
+
+That's it. Four fields. We'll add more fields in later chapters as we need them — framebuffer pointers when we start drawing pixels, cursor position when we start rendering text. But right now, this is all we need.
+
+```c
+extern struct boot_state g_boot;
+```
+
+The `extern` keyword says: "this variable exists somewhere, but it's defined in another file." Every file that includes `boot.h` can *use* `g_boot`, but none of them *create* it. The actual storage will be in `main.c`.
+
+Without `extern`, every file that includes `boot.h` would try to create its own copy of `g_boot`, and the linker would complain about duplicate symbols.
+
+```c
+#endif /* BOOT_H */
+```
+
+Close the include guard.
+
+## Refactoring main.c
+
+Now let's update `src/main.c` to use our global state:
+
+```c
+#include "boot.h"
+
+struct boot_state g_boot;
+```
+
+We replace the two `#include <efi.h>` and `#include <efilib.h>` with a single `#include "boot.h"` — which pulls those in for us. And we define `g_boot` here — this is the actual storage that the `extern` declaration in `boot.h` referred to.
+
+Note the different include syntax: `<efi.h>` uses angle brackets (search the system include paths), while `"boot.h"` uses quotes (search the current directory first). Our own headers use quotes.
+
+Now let's add a helper function to make console printing less verbose:
+
+```c
+static void con_print(const CHAR16 *s) {
+    g_boot.st->ConOut->OutputString(g_boot.st->ConOut, (CHAR16 *)s);
+}
+```
+
+The `static` keyword means this function is only visible within `main.c`. Other files can't call it. This is good practice for helper functions that don't need external visibility.
+
+The cast `(CHAR16 *)` discards the `const` qualifier because UEFI's `OutputString` signature doesn't use `const` — a minor oversight in the specification. Our function takes `const CHAR16 *` because it's the right thing to do: `con_print` doesn't modify the string.
+
+Now the full refactored `src/main.c`:
+
+```c
+#include "boot.h"
+
+struct boot_state g_boot;
+
+static void con_print(const CHAR16 *s) {
+    g_boot.st->ConOut->OutputString(g_boot.st->ConOut, (CHAR16 *)s);
+}
+
+EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
+    g_boot.image_handle = image_handle;
+    g_boot.st = st;
+    g_boot.bs = st->BootServices;
+    g_boot.rs = st->RuntimeServices;
+
+    g_boot.bs->SetWatchdogTimer(0, 0, 0, NULL);
+
+    con_print(L"SURVIVAL WORKSTATION: Booting...\r\n");
+    con_print(L"Press any key (ESC to shutdown)...\r\n> ");
+
+    st->ConIn->Reset(st->ConIn, FALSE);
+
+    EFI_INPUT_KEY key;
+    UINTN index;
+
+    for (;;) {
+        g_boot.bs->WaitForEvent(1, &g_boot.st->ConIn->WaitForKey, &index);
+
+        EFI_STATUS status = g_boot.st->ConIn->ReadKeyStroke(g_boot.st->ConIn, &key);
+        if (EFI_ERROR(status))
+            continue;
+
+        if (key.ScanCode == 0x17 || key.UnicodeChar == 0x1B)
+            break;
+
         if (key.UnicodeChar == '\r') {
             con_print(L"\r\n> ");
         } else if (key.UnicodeChar >= 0x20 && key.UnicodeChar <= 0x7E) {
@@ -290,24 +380,30 @@ Check for ESC. Scan code `0x17` is UEFI's code for the Escape key. We also check
             con_print(ch);
         }
     }
+
+    con_print(L"\r\nShutting down...\r\n");
+    g_boot.bs->Stall(1000000);
+    g_boot.rs->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+
+    return EFI_SUCCESS;
 }
 ```
 
-For Enter (`\r`), we print a newline and a new prompt. For printable ASCII characters (0x20 space through 0x7E tilde), we echo the character. We create a 2-element `CHAR16` array — the character followed by a null terminator — because `OutputString` expects a null-terminated string, not a single character.
+The first thing `efi_main` does is stash the UEFI parameters into our global state. From that point on, any code anywhere can access Boot Services through `g_boot.bs`, Runtime Services through `g_boot.rs`, and the System Table through `g_boot.st`.
 
-Characters outside this range (control characters, extended Unicode) are silently ignored.
+Compare the old `st->BootServices->SetWatchdogTimer(...)` with the new `g_boot.bs->SetWatchdogTimer(...)`. Slightly shorter, but more importantly, it works from any file — not just `efi_main`.
 
-## What We Achieved
+## What We Have
 
-With just this code, we have a working UEFI application that:
+Two files. About 40 lines total:
 
-1. Receives control from the firmware
-2. Disables the watchdog
-3. Initializes subsystems
-4. Displays a banner
-5. Accepts keyboard input in an interactive loop
-6. Shuts down cleanly on ESC
+```
+src/boot.h   — Global state structure and UEFI includes
+src/main.c   — Entry point, console I/O loop, shutdown
+```
 
-The binary is 64 KB. It boots on real ARM64 hardware with UEFI firmware and on QEMU. Not bad for our first step.
+The application boots, prints a banner, echoes keystrokes to the UEFI console, and shuts down on ESC. It works in QEMU and on real hardware.
 
-In the next chapter, we'll look at memory management — how to allocate and free memory when you don't have `malloc`.
+But we're drawing text using UEFI's built-in console, which is limited — we can't control colors, position, or font. To build a real workstation UI, we need to draw our own pixels. That requires two things: memory management (to allocate buffers) and a framebuffer driver (to paint pixels on screen).
+
+We'll tackle memory first. It's the simpler problem, and the framebuffer code will need it.

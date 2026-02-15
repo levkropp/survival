@@ -342,10 +342,248 @@ survival/
 ├── tools/
 │   └── gnu-efi/                     # Cross-compiled gnu-efi
 │       ├── include/                 # UEFI headers
-│       └── lib/                     # CRT, linker script, libraries
+│       └── lib-aarch64/             # ARM64 CRT, linker script, libraries
+│       └── lib-x86_64/             # x86_64 CRT, linker script, libraries
 └── build/                           # Generated (not in source control)
-    ├── survival.efi                 # The final binary (64 KB)
-    └── esp/EFI/BOOT/BOOTAA64.EFI   # Copy for SD card
+    ├── aarch64/survival.efi         # ARM64 binary
+    ├── x86_64/survival.efi          # x86_64 binary
+    └── ...
+```
+
+## The Second Architecture: x86_64
+
+The workstation targets an ARM64 single-board computer. But UEFI abstracts the hardware. A UEFI application that talks to GOP, SimpleTextInput, and SimpleFileSystem can run on any machine with UEFI firmware, regardless of CPU architecture. Adding x86_64 means the workstation runs on essentially any modern PC — your laptop, a spare desktop, anything that boots UEFI.
+
+It also means we can develop and test on the host machine without cross-compilation overhead. QEMU with OVMF (an x86_64 UEFI firmware) runs at near-native speed on an x86_64 Linux box.
+
+### The Dual-Architecture Makefile
+
+The build system needs to produce two different binaries from the same source. The approach: a single `ARCH` variable that selects everything architecture-specific.
+
+At the top of the Makefile:
+
+```makefile
+ARCH     ?= aarch64
+```
+
+Then a conditional block that sets all arch-dependent variables:
+
+```makefile
+ifeq ($(ARCH),aarch64)
+  CROSS       := aarch64-linux-gnu-
+  EFI_ARCH    := aarch64
+  EFI_BOOT    := BOOTAA64.EFI
+  OBJCOPY_TGT := efi-app-aarch64
+  TCC_TARGET  := -DTCC_TARGET_ARM64=1
+  ARCH_CFLAGS := -mstrict-align
+  SETJMP_SRC  := $(SRCDIR)/setjmp_aarch64.S
+else ifeq ($(ARCH),x86_64)
+  CROSS       :=
+  EFI_ARCH    := x86_64
+  EFI_BOOT    := BOOTX64.EFI
+  OBJCOPY_TGT := efi-app-x86_64
+  TCC_TARGET  := -DTCC_TARGET_X86_64=1
+  ARCH_CFLAGS := -mno-red-zone -DGNU_EFI_USE_MS_ABI
+  SETJMP_SRC  := $(SRCDIR)/setjmp_x86_64.S
+else
+  $(error Unsupported ARCH=$(ARCH). Use aarch64 or x86_64)
+endif
+```
+
+Every variable that touches the architecture flows from this block:
+
+- **`CROSS`** — the cross-compiler prefix. ARM64 needs `aarch64-linux-gnu-gcc`. x86_64 uses the native compiler (empty prefix).
+- **`EFI_BOOT`** — the filename UEFI firmware looks for. ARM64 boots from `BOOTAA64.EFI`, x86_64 from `BOOTX64.EFI`.
+- **`OBJCOPY_TGT`** — the PE/COFF target format for `objcopy`.
+- **`TCC_TARGET`** — passed to TCC's unity build so it generates code for the right architecture.
+- **`ARCH_CFLAGS`** — architecture-specific compiler flags.
+- **`SETJMP_SRC`** — which assembly file provides `setjmp`/`longjmp`.
+
+These plug into the rest of the Makefile via `$(ARCH_CFLAGS)` in the CFLAGS and TCC_CFLAGS definitions, and `$(SETJMP_SRC)` in the assembly build rule:
+
+```makefile
+$(BUILDDIR)/setjmp.o: $(SETJMP_SRC)
+	@mkdir -p $(BUILDDIR)
+	$(CC) -c -o $@ $<
+```
+
+Build outputs go to `build/$(ARCH)/`, so both architectures can coexist:
+
+```makefile
+BUILDDIR := build/$(ARCH)
+```
+
+Building both is one command:
+
+```makefile
+all-arches:
+	$(MAKE) ARCH=aarch64
+	$(MAKE) ARCH=x86_64
+```
+
+### x86_64 Compiler Flags
+
+Two flags in `ARCH_CFLAGS` deserve explanation.
+
+**The Red Zone.** The System V AMD64 ABI defines a "red zone" — 128 bytes below the stack pointer that functions can use without adjusting `rsp`. Leaf functions can skip the `sub rsp, N` / `add rsp, N` dance and just use the space below `rsp` directly. GCC exploits this aggressively.
+
+The problem: interrupts and exceptions also use the stack. When a UEFI timer interrupt fires, the firmware pushes state onto the stack — right on top of the red zone data. The function resumes and its local variables are corrupt. `-mno-red-zone` tells GCC to never assume the space below `rsp` is safe. Linux kernels disable it too.
+
+**The MS ABI.** UEFI was designed by Intel and uses Microsoft's calling convention, even on non-Windows systems. The key difference from System V: integer arguments go in rcx, rdx, r8, r9 (not rdi, rsi, rdx, rcx), and the caller must reserve 32 bytes of "shadow space" above the return address. gnu-efi handles this transparently when `GNU_EFI_USE_MS_ABI` is defined — it wraps every UEFI call with `__attribute__((ms_abi))` to switch calling conventions. Our own functions use the normal System V ABI.
+
+On ARM64, there's no ABI split — UEFI uses the standard AAPCS64 calling convention. This is one way ARM64 UEFI is simpler than x86_64.
+
+### gnu-efi for x86_64
+
+Our local gnu-efi build at `tools/gnu-efi/` needs libraries for both architectures. The `lib-aarch64/` directory was built from source (the distro package only has x86 targets). For x86_64, the distro package works:
+
+```bash
+sudo apt install gnu-efi
+mkdir -p tools/gnu-efi/lib-x86_64
+cp /usr/lib/crt0-efi-x86_64.o tools/gnu-efi/lib-x86_64/
+cp /usr/lib/elf_x86_64_efi.lds tools/gnu-efi/lib-x86_64/
+cp /usr/lib/libefi.a tools/gnu-efi/lib-x86_64/
+cp /usr/lib/libgnuefi.a tools/gnu-efi/lib-x86_64/
+```
+
+The include files are shared — ARM64 and x86_64 use the same gnu-efi headers (with arch-specific subdirectories for a few definitions).
+
+### QEMU for x86_64
+
+ARM64 QEMU uses `QEMU_EFI.fd` as firmware. x86_64 uses OVMF — Intel's open-source UEFI firmware for virtual machines:
+
+```bash
+sudo apt install ovmf
+```
+
+This provides `/usr/share/OVMF/OVMF_CODE_4M.fd` (firmware code) and `/usr/share/OVMF/OVMF_VARS_4M.fd` (NVRAM template).
+
+Create `scripts/run-qemu-x86_64.sh`:
+
+```bash
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+BUILD_DIR="$PROJECT_DIR/build/x86_64"
+ESP_DIR="$BUILD_DIR/esp"
+
+# OVMF firmware
+FW_CODE="/usr/share/OVMF/OVMF_CODE_4M.fd"
+FW_VARS="/tmp/survival_ovmf_vars.fd"
+
+# CRITICAL: copy the VARS template, do NOT create an empty file.
+# OVMF_VARS contains pre-initialized NVRAM data. A zero-filled
+# file causes an Invalid Opcode exception at boot.
+cp /usr/share/OVMF/OVMF_VARS_4M.fd "$FW_VARS"
+
+# Create disk image
+IMG="$BUILD_DIR/disk.img"
+dd if=/dev/zero of="$IMG" bs=1M count=64 2>/dev/null
+mkfs.vfat -F 32 "$IMG" >/dev/null 2>&1
+mcopy -i "$IMG" -s "$ESP_DIR"/* ::/
+
+qemu-system-x86_64 \
+    -m 256M \
+    -drive if=pflash,format=raw,file="$FW_CODE",readonly=on \
+    -drive if=pflash,format=raw,file="$FW_VARS" \
+    -hda "$IMG" \
+    -device ramfb \
+    -device qemu-xhci -device usb-kbd \
+    -serial stdio
+```
+
+The OVMF_VARS trap deserves emphasis. The VARS file is a NVRAM template containing pre-initialized firmware variables. If you create it as a zero-filled file (like `dd if=/dev/zero`), OVMF tries to parse garbage NVRAM data and crashes with an Invalid Opcode exception before your application loads. Always copy from the template.
+
+### setjmp for x86_64
+
+ARM64 needed to save 22 registers (Chapter 13). x86_64 is simpler — the System V ABI has only 6 callee-saved general-purpose registers plus the stack pointer and return address:
+
+```
+rbx, rbp, r12, r13, r14, r15, rsp, return address = 8 slots
+```
+
+Create `src/setjmp_x86_64.S`:
+
+```asm
+    .text
+    .align 16
+
+    .global setjmp
+    .type   setjmp, @function
+setjmp:
+    mov  %rbx,    (%rdi)
+    mov  %rbp,   8(%rdi)
+    mov  %r12,  16(%rdi)
+    mov  %r13,  24(%rdi)
+    mov  %r14,  32(%rdi)
+    mov  %r15,  40(%rdi)
+    lea  8(%rsp), %rax       /* caller's rsp (before call pushed rip) */
+    mov  %rax,  48(%rdi)
+    mov  (%rsp), %rax        /* return address */
+    mov  %rax,  56(%rdi)
+    xor  %eax, %eax          /* return 0 */
+    ret
+
+    .global longjmp
+    .type   longjmp, @function
+longjmp:
+    mov  %esi, %eax          /* return value */
+    test %eax, %eax
+    jnz  1f
+    inc  %eax                /* longjmp(buf, 0) returns 1 */
+1:
+    mov    (%rdi), %rbx
+    mov   8(%rdi), %rbp
+    mov  16(%rdi), %r12
+    mov  24(%rdi), %r13
+    mov  32(%rdi), %r14
+    mov  40(%rdi), %r15
+    mov  48(%rdi), %rsp
+    jmp *56(%rdi)            /* jump to saved return address */
+```
+
+64 bytes of state versus ARM64's 176 bytes. x86_64's SSE registers (xmm0-xmm15) are all caller-saved, so `setjmp` doesn't touch them.
+
+The `jmp_buf` typedef in `shim.h` is architecture-conditional:
+
+```c
+#ifdef __aarch64__
+typedef long jmp_buf[22];
+#else
+typedef long jmp_buf[8];
+#endif
+```
+
+### Conditional Code in C
+
+Most of our C code is architecture-neutral — UEFI abstracts the hardware. But a few places need `#ifdef`:
+
+```c
+/* F6 rebuild: arch-specific output path */
+#ifdef __aarch64__
+    const char *out_path = "/EFI/BOOT/BOOTAA64.EFI";
+#else
+    const char *out_path = "/EFI/BOOT/BOOTX64.EFI";
+#endif
+```
+
+These are rare. The UEFI protocols — GOP, SimpleTextInput, SimpleFileSystem — work identically on both architectures. A pixel on x86_64 is still a 32-bit BGRX value in a linear framebuffer. A keypress still arrives through `ReadKeyStroke`. A file still opens through `SimpleFileSystem`. That's the beauty of UEFI as a platform abstraction.
+
+### Building and Testing Both Architectures
+
+```bash
+# ARM64 (default)
+make
+./scripts/run-qemu.sh graphical
+
+# x86_64
+make ARCH=x86_64
+./scripts/run-qemu-x86_64.sh
+
+# Both architectures
+make all-arches
 ```
 
 ## Key Takeaways
@@ -357,5 +595,7 @@ survival/
 - gnu-efi provides UEFI headers, CRT startup code, and helper libraries
 - The CRT must be linked first — it contains the true entry point
 - QEMU with `ramfb` provides a real framebuffer for testing
+- The same Makefile builds for ARM64 and x86_64 — one `ARCH` variable controls everything
+- x86_64 UEFI requires `-mno-red-zone` and MS ABI calling convention wrappers
 
 Now that we have our tools ready, let's write some actual code.

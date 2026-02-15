@@ -2,18 +2,20 @@
 
 ## Wiring It Together
 
-We've built four subsystems:
+We have four subsystems built across four chapters:
 
 - **Memory** (Chapter 5) — allocates and frees memory through UEFI
-- **Framebuffer** (Chapter 6) — draws pixels and text on screen
-- **Keyboard** (Chapter 7) — reads keystrokes from the user
-- **Boot state** (Chapter 4) — holds the global UEFI handles everything shares
+- **Framebuffer** (Chapter 6) — draws pixels, characters, and strings
+- **Font** (Chapter 6) — 8x16 bitmap font data for text rendering
+- **Keyboard** (Chapter 7) — reads and normalizes keystrokes
 
-Now we connect them in `main.c` — the file that contains our entry point, initialization sequence, and main loop. We've already seen the entry point and console loop in Chapter 4. In this chapter, we'll focus on the framebuffer loop and the design decisions that shaped the whole program.
+Each module works in isolation, but `main.c` still runs the Chapter 4 console loop. In this chapter, we connect everything into a working application — one that boots, draws a colored banner on the framebuffer, echoes keystrokes, and shuts down cleanly.
 
-## Two Loops, One Program
+## The Problem of No Framebuffer
 
-Our application has two main loops:
+Not every system provides a usable framebuffer. UEFI's GOP protocol can exist even when there's no linear framebuffer — `LocateProtocol` succeeds, but `FrameBufferBase` is NULL. Our `fb_init()` handles this by returning an error.
+
+We need two main loops:
 
 ```
 fb_init() succeeds?
@@ -21,100 +23,26 @@ fb_init() succeeds?
     └── No  → console_loop() Console mode: UEFI text output
 ```
 
-This dual-mode design exists for practical reasons. Not every environment provides a linear framebuffer:
+The console loop is our Chapter 4 code, largely unchanged. It always works because UEFI's text console goes to both the display and the serial port. The framebuffer loop is the new, richer experience.
 
-- **QEMU with `ramfb`** — real framebuffer, `fb_init()` succeeds
-- **QEMU with `virtio-gpu-pci`** — GOP exists but framebuffer address is NULL, `fb_init()` fails
-- **QEMU with `-display none`** — no display device at all
-- **Real hardware** — depends on U-Boot configuration and display connection
+## Updating main.c
 
-Console mode gives us a fallback that always works (UEFI text output goes to both the display and the serial port). We can test application logic even when there's no screen attached.
-
-## The Framebuffer Loop
-
-Let's walk through `fb_loop()` line by line:
+Let's rebuild `main.c` from the top. First, the includes and global state:
 
 ```c
-static void fb_loop(void) {
-    print_banner_fb();
+#include "boot.h"
+#include "fb.h"
+#include "kbd.h"
+#include "mem.h"
+
+struct boot_state g_boot;
 ```
 
-We display the splash screen. `print_banner_fb()` uses `fb_print()` to draw colored text — the project name in green, hardware info in white, instructions in yellow, and a separator in dark gray. This gives immediate visual feedback that the system booted successfully.
+We now include all four module headers. Every module depends on `boot.h` (through their own headers), but `main.c` needs them all directly because it calls functions from each.
 
-The function also constructs a resolution string like "1024x768 (128x48 chars)" by converting integers to ASCII manually with `uint_to_str()`. We can't use `sprintf` — we don't have a C library.
+## A Number-to-String Helper
 
-```c
-    struct key_event ev;
-    for (;;) {
-        kbd_wait(&ev);
-```
-
-The infinite loop. We block on `kbd_wait()`, which suspends the CPU until a key is pressed. Between keystrokes, our application uses zero CPU — the processor sits in a low-power state.
-
-```c
-        if (ev.code == KEY_ESC)
-            break;
-```
-
-Escape exits the loop. When we break out, execution falls through to the shutdown sequence in `efi_main()`.
-
-```c
-        if (ev.code == KEY_ENTER || ev.code == '\r') {
-            fb_print("\n> ", COLOR_GREEN);
-```
-
-Enter starts a new line and prints a green prompt. We check for both `KEY_ENTER` (our constant, `0x0D`) and `'\r'` (the ASCII carriage return character, also `0x0D`). They're actually the same value — the double check is redundant but reads clearly. It says "we expect Enter here" rather than just checking a magic number.
-
-The `fb_print()` function handles the `\n` by advancing `cursor_y` and resetting `cursor_x` to 0. The `>` and space are then drawn as characters at the new cursor position.
-
-```c
-        } else if (ev.code == KEY_BS) {
-            if (g_boot.cursor_x > 2) {
-                g_boot.cursor_x--;
-                fb_char(g_boot.cursor_x, g_boot.cursor_y, ' ', COLOR_BLACK, COLOR_BLACK);
-            }
-```
-
-Backspace handling. We check `cursor_x > 2` to prevent the user from backspacing over the `> ` prompt (which occupies columns 0 and 1). If there's room, we move the cursor back one column and draw a space with a black foreground and background — effectively erasing the character.
-
-This is a simple but imperfect implementation. It doesn't handle backspacing across line boundaries (if the user typed enough characters to wrap to the next line, backspace won't unwrap). For Phase 1, this is fine — we're building a keystroke echo demo, not a text editor.
-
-```c
-        } else if (ev.code >= 0x20 && ev.code <= 0x7E) {
-            char s[2] = {(char)ev.code, '\0'};
-            fb_print(s, COLOR_WHITE);
-        }
-    }
-}
-```
-
-For printable ASCII characters (space `0x20` through tilde `0x7E`), we echo the character in white. We create a 2-byte string — the character plus a null terminator — because `fb_print` expects a null-terminated string, not a single character.
-
-Characters outside the printable range (control characters, extended Unicode) are silently ignored. No crash, no garbage — just nothing happens.
-
-## The Console Loop
-
-The console loop (covered in Chapter 4) follows the same pattern but uses UEFI's text console instead of our framebuffer:
-
-```c
-static void console_loop(void) {
-    print_banner_console();
-
-    EFI_INPUT_KEY key;
-    UINTN index;
-
-    for (;;) {
-        g_boot.bs->WaitForEvent(1, &g_boot.st->ConIn->WaitForKey, &index);
-        EFI_STATUS status = g_boot.st->ConIn->ReadKeyStroke(g_boot.st->ConIn, &key);
-        if (EFI_ERROR(status))
-            continue;
-```
-
-Notice that the console loop uses UEFI's keyboard functions directly instead of our `kbd` module. This is intentional — the console loop is a minimal fallback. It doesn't need the abstraction because it doesn't need the key code normalization. It checks `UnicodeChar` directly for printable characters and `ScanCode` for Escape.
-
-Also notice the `continue` on error. After `WaitForEvent` returns, `ReadKeyStroke` should always succeed because an event just told us a key is available. But if something goes wrong (a race condition, a firmware quirk), we don't crash — we just go back to waiting.
-
-## The Integer-to-String Helper
+We want to display the screen resolution in our banner, but we don't have `sprintf`. We need to convert integers to strings manually:
 
 ```c
 static void uint_to_str(UINT32 n, char *buf) {
@@ -128,19 +56,237 @@ static void uint_to_str(UINT32 n, char *buf) {
 }
 ```
 
-This function converts an unsigned integer to its decimal string representation. Without `printf` or `sprintf`, we need to do this ourselves.
+The algorithm extracts digits in reverse (`n % 10` gives the last digit, `n / 10` removes it), stores them in a temporary buffer, then copies them out in the right order. For `1024`, the first phase produces `4, 2, 0, 1`; the second phase reverses to `1, 0, 2, 4`.
 
-The algorithm works in two phases:
+## A Console Print Helper for ASCII
 
-**Phase 1: Extract digits in reverse.** `n % 10` gives the last digit, `n / 10` removes it. For example, 1024 produces: 4, 2, 0, 1. We store these in `tmp`.
+Our `con_print` function takes CHAR16 wide strings, which is what UEFI's `OutputString` expects. But when we build strings dynamically — like resolution numbers — we work in plain ASCII `char` buffers. Converting each one to a `L"..."` wide literal is not possible at runtime.
 
-**Phase 2: Reverse into the output.** We copy from `tmp` to `buf` in reverse order, so the digits come out in the right order: 1, 0, 2, 4.
+We add a small helper that converts ASCII to CHAR16 one character at a time:
 
-The zero case is handled specially — without it, the loop body never executes (because `0 > 0` is false) and we'd produce an empty string.
+```c
+static void con_print_ascii(const char *s) {
+    while (*s) {
+        if (*s == '\n') {
+            con_print(L"\r\n");
+        } else {
+            CHAR16 ch[2] = { (CHAR16)(unsigned char)*s, 0 };
+            con_print(ch);
+        }
+        s++;
+    }
+}
+```
 
-## The Entry Point Revisited
+This lets the console banner use the same `uint_to_str` buffers as the framebuffer banner, without duplicating number formatting logic into wide-string equivalents. The `\n` to `\r\n` translation handles the fact that UEFI's console requires carriage returns.
 
-Let's look at `efi_main()` one more time, now that we understand all the subsystems it coordinates:
+## Querying System Memory
+
+We want the banner to show how much memory the system has. UEFI provides this through its memory map — the same map an OS would use to understand available RAM. We query it, sum the usable regions, and convert to megabytes:
+
+```c
+static UINT32 get_total_memory_mb(void) {
+    UINTN map_size = 0, map_key, desc_size;
+    UINT32 desc_ver;
+
+    g_boot.bs->GetMemoryMap(&map_size, NULL, &map_key, &desc_size, &desc_ver);
+    map_size += 2 * desc_size;
+
+    EFI_MEMORY_DESCRIPTOR *map = (EFI_MEMORY_DESCRIPTOR *)mem_alloc(map_size);
+    if (!map) return 0;
+
+    EFI_STATUS status = g_boot.bs->GetMemoryMap(
+        &map_size, map, &map_key, &desc_size, &desc_ver);
+    if (EFI_ERROR(status)) {
+        mem_free(map);
+        return 0;
+    }
+
+    UINT64 total_pages = 0;
+    UINT8 *ptr = (UINT8 *)map;
+    UINT8 *end = ptr + map_size;
+    while (ptr < end) {
+        EFI_MEMORY_DESCRIPTOR *desc = (EFI_MEMORY_DESCRIPTOR *)ptr;
+        UINT32 t = desc->Type;
+        if ((t >= EfiLoaderCode && t <= EfiConventionalMemory) ||
+            t == EfiACPIReclaimMemory)
+            total_pages += desc->NumberOfPages;
+        ptr += desc_size;
+    }
+
+    mem_free(map);
+    return (UINT32)((total_pages * 4096) / (1024 * 1024));
+}
+```
+
+The two-call pattern is standard UEFI: first call with a NULL buffer to learn the required size, then allocate and call again. We add `2 * desc_size` as padding because the allocation itself can change the memory map.
+
+The walk through the descriptor array uses `desc_size` rather than `sizeof(EFI_MEMORY_DESCRIPTOR)` — UEFI firmware may return descriptors larger than the struct definition, so we must step by the reported size.
+
+We count pages from memory types that represent usable RAM: `EfiLoaderCode` through `EfiConventionalMemory` (the loader and boot services regions), plus `EfiACPIReclaimMemory` (reclaimable after ACPI tables are read). Each page is 4096 bytes.
+
+## The Framebuffer Banner
+
+When the framebuffer is available, we show a splash screen:
+
+```c
+static void print_banner_fb(void) {
+    char res[64];
+    char num[16];
+    int i = 0;
+
+    fb_print("\n", COLOR_GREEN);
+    fb_print("  ========================================\n", COLOR_GREEN);
+    fb_print("       SURVIVAL WORKSTATION v0.1\n", COLOR_GREEN);
+    fb_print("  ========================================\n", COLOR_GREEN);
+    fb_print("\n", COLOR_GREEN);
+
+#ifdef __aarch64__
+    fb_print("  Platform: ARM64\n", COLOR_WHITE);
+#elif defined(__x86_64__)
+    fb_print("  Platform: x86_64\n", COLOR_WHITE);
+#endif
+```
+
+Multiple colors on screen for the first time. The title is green, platform info is white. Each `fb_print` call advances the cursor, so the lines stack naturally.
+
+The original banner hard-coded "Target: Libre Computer Sweet Potato V2" and "SoC: Amlogic S905X" — details specific to one ARM64 board. Since our workstation builds for both ARM64 and x86_64, we use preprocessor conditionals to show the correct platform. The compiler defines `__aarch64__` or `__x86_64__` automatically based on the target, so this costs nothing at runtime.
+
+```c
+    /* Build resolution string: "800x600 (100x37 chars)" */
+    uint_to_str(g_boot.fb_width, num);
+    for (int j = 0; num[j]; j++) res[i++] = num[j];
+    res[i++] = 'x';
+    uint_to_str(g_boot.fb_height, num);
+    for (int j = 0; num[j]; j++) res[i++] = num[j];
+    res[i++] = ' ';
+    res[i++] = '(';
+    uint_to_str(g_boot.cols, num);
+    for (int j = 0; num[j]; j++) res[i++] = num[j];
+    res[i++] = 'x';
+    uint_to_str(g_boot.rows, num);
+    for (int j = 0; num[j]; j++) res[i++] = num[j];
+    res[i++] = ' ';
+    res[i++] = 'c'; res[i++] = 'h'; res[i++] = 'a';
+    res[i++] = 'r'; res[i++] = 's'; res[i++] = ')';
+    res[i] = '\0';
+
+    fb_print("  Display:  ", COLOR_GRAY);
+    fb_print(res, COLOR_GRAY);
+    fb_print("\n", COLOR_WHITE);
+```
+
+The resolution string is built character by character — awkward without `sprintf`, but correct.
+
+```c
+    /* Memory info */
+    UINT32 mem_mb = get_total_memory_mb();
+    if (mem_mb > 0) {
+        fb_print("  Memory:   ", COLOR_GRAY);
+        uint_to_str(mem_mb, num); fb_print(num, COLOR_GRAY);
+        fb_print(" MB\n", COLOR_GRAY);
+    }
+
+    fb_print("\n", COLOR_WHITE);
+    fb_print("  Press any key to enter file browser.\n", COLOR_YELLOW);
+    fb_print("  ----------------------------------------\n", COLOR_DGRAY);
+}
+```
+
+After the display resolution, we show total system memory. Later, when we add filesystem support (Chapter 9), the banner will also show disk space — "Disk: X MB free / Y MB total" — using the `fs_volume_info()` function. And in Phase 3, a TCC compiler self-test line will appear here too. For now, platform, display, and memory give us a useful system overview.
+
+The yellow "Press any key" line and gray separator complete the banner.
+
+## The Framebuffer Loop
+
+```c
+static void fb_loop(void) {
+    print_banner_fb();
+
+    struct key_event ev;
+    kbd_wait(&ev);
+}
+```
+
+The framebuffer loop shows the banner and waits for one keypress. In Phase 2 (Chapter 10), this will launch the file browser. But for Phase 1, we're establishing the pattern: show a banner, then hand control to an interactive component.
+
+Notice there is no second "Press any key" message here. An earlier version printed the prompt both inside `print_banner_fb()` and again in `fb_loop()`, producing a duplicate line on screen. The banner owns the prompt — the loop just waits.
+
+## The Console Banner and Fallback
+
+The console banner mirrors the framebuffer banner but uses `con_print` and `con_print_ascii` for UEFI text output:
+
+```c
+static void print_banner_console(void) {
+    char num[16];
+
+    con_print(L"\r\n");
+    con_print(L"  ========================================\r\n");
+    con_print(L"       SURVIVAL WORKSTATION v0.1\r\n");
+    con_print(L"  ========================================\r\n");
+    con_print(L"\r\n");
+
+#ifdef __aarch64__
+    con_print(L"  Platform: ARM64\r\n");
+#elif defined(__x86_64__)
+    con_print(L"  Platform: x86_64\r\n");
+#endif
+    con_print(L"  Mode:     Console (no framebuffer)\r\n");
+```
+
+The same `#ifdef` platform detection appears here. Where the framebuffer banner shows a resolution string, the console banner shows "Mode: Console (no framebuffer)" — the console has no resolution to report.
+
+```c
+    /* Memory info */
+    UINT32 mem_mb = get_total_memory_mb();
+    if (mem_mb > 0) {
+        con_print_ascii("  Memory:   ");
+        uint_to_str(mem_mb, num); con_print_ascii(num);
+        con_print_ascii(" MB\n");
+    }
+
+    con_print(L"\r\n");
+    con_print(L"  Type anything. Press ESC to shutdown.\r\n");
+    con_print(L"  ----------------------------------------\r\n");
+    con_print(L"\r\n> ");
+}
+```
+
+The memory line uses `con_print_ascii` to print the dynamically formatted number. As with the framebuffer banner, disk info will be added here once the filesystem module exists in Chapter 9.
+
+The console loop itself stays close to Chapter 4, using UEFI's text console directly:
+
+```c
+static void console_loop(void) {
+    print_banner_console();
+
+    EFI_INPUT_KEY key;
+    UINTN index;
+
+    for (;;) {
+        g_boot.bs->WaitForEvent(1, &g_boot.st->ConIn->WaitForKey, &index);
+        EFI_STATUS status = g_boot.st->ConIn->ReadKeyStroke(g_boot.st->ConIn, &key);
+        if (EFI_ERROR(status))
+            continue;
+
+        if (key.ScanCode == 0x17 || key.UnicodeChar == 0x1B)
+            break;
+
+        if (key.UnicodeChar == '\r') {
+            con_print(L"\r\n> ");
+        } else if (key.UnicodeChar >= 0x20 && key.UnicodeChar <= 0x7E) {
+            CHAR16 ch[2] = { key.UnicodeChar, 0 };
+            con_print(ch);
+        }
+    }
+}
+```
+
+Notice it uses UEFI's keyboard directly instead of our `kbd` module. This is intentional — the console loop is a minimal fallback. It doesn't need key code normalization because it checks `UnicodeChar` and `ScanCode` directly.
+
+## The Entry Point
+
+Let's look at the complete `efi_main`, which orchestrates everything:
 
 ```c
 EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
@@ -164,7 +310,6 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
     status = fb_init();
     if (!EFI_ERROR(status)) {
         have_fb = 1;
-        con_print(L"Framebuffer initialized.\r\n");
     } else {
         con_print(L"No framebuffer, falling back to console.\r\n");
     }
@@ -190,43 +335,50 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
 The initialization order matters:
 
 1. **Global state first.** Everything else needs `g_boot`.
-2. **Watchdog off.** Before we do anything that might take time.
-3. **Console message.** So we can see boot progress via serial even if framebuffer fails.
+2. **Watchdog off.** Before anything that might take time.
+3. **Console message.** So we see boot progress via serial even if framebuffer fails.
 4. **Memory.** Other subsystems might need to allocate.
-5. **Framebuffer.** Try to set up graphics, note whether it worked.
+5. **Framebuffer.** Try to set up graphics; note whether it worked.
 6. **Keyboard reset.** Clear any buffered keystrokes from the boot process.
 
-After the main loop exits, we:
-1. Print a shutdown message (via the console, which always works)
-2. Wait one second so the user can read the message
-3. Power off the machine
+One subtle thing to notice: when `fb_init()` succeeds, we do *not* print "Framebuffer initialized" to the console. An earlier version did this, and the text leaked onto the graphical display. UEFI's text console and the framebuffer share the same physical screen — writing to ConOut after initializing GOP smears text console output over whatever the framebuffer is drawing. The fix is simple: once we have a framebuffer, only talk to it through `fb_print`. The console is for the fallback path and for serial output during early boot, before `fb_init` is called.
 
-`Stall(1000000)` is UEFI's microsecond delay — 1,000,000 microseconds = 1 second. `ResetSystem(EfiResetShutdown, ...)` asks the firmware to power off. This function never returns — after it's called, the hardware powers down. The `return EFI_SUCCESS` is unreachable but satisfies the compiler's requirement that the function returns a value.
+After the main loop exits, we print a shutdown message via the console (which always works), wait one second, and power off.
 
 ## The Build System
 
-The Makefile orchestrates the three-step build process we detailed in Chapter 3:
+The Makefile orchestrates a three-step build:
 
 ```
 Source files  ──compile──→  Object files  ──link──→  ELF binary  ──convert──→  PE binary
 (src/*.c)                   (build/*.o)              (survival.so)             (survival.efi)
 ```
 
-Let's highlight a few make targets:
+Key elements:
 
 ```makefile
-all: $(TARGET) esp
+SOURCES  := $(SRCDIR)/main.c $(SRCDIR)/fb.c $(SRCDIR)/kbd.c \
+            $(SRCDIR)/mem.c $(SRCDIR)/font.c
 ```
 
-The default target builds the EFI binary AND copies it to the ESP directory. So a bare `make` produces everything needed for testing.
+Each source file is compiled separately. Make only recompiles files that changed — edit `kbd.c` and only `kbd.o` is rebuilt.
 
 ```makefile
-$(BUILDDIR)/%.o: $(SRCDIR)/%.c
-	@mkdir -p $(BUILDDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
+$(SO): $(OBJECTS)
+	$(LD) $(LDFLAGS) -L$(EFI_LIB) $(EFI_CRT) $(OBJECTS) -o $@ \
+	    -lefi -lgnuefi $(LIBGCC)
 ```
 
-The pattern rule: any `.o` depends on the corresponding `.c`. Make only recompiles files that changed — if you edit `kbd.c`, only `kbd.o` is rebuilt, then the link and convert steps run again.
+Linking order matters. The CRT startup code (`crt0-efi-aarch64.o`) comes first. Then our objects. Then the libraries (`-lefi -lgnuefi`) and `libgcc.a`. If you reorder these, you get cryptic linker errors.
+
+```makefile
+$(TARGET): $(SO)
+	$(OBJCOPY) -j .text -j .sdata -j .data -j .rodata -j .dynamic \
+	    -j .dynsym -j .rel -j .rela -j .reloc \
+	    --target=efi-app-aarch64 $< $@
+```
+
+The final conversion from ELF to PE/COFF. The `-j` flags specify which sections to include. Missing `-j .rodata` would silently produce a binary that crashes — all string literals and the font data live in `.rodata`.
 
 ```makefile
 esp: $(TARGET)
@@ -234,47 +386,16 @@ esp: $(TARGET)
 	cp $(TARGET) $(ESP_DIR)/BOOTAA64.EFI
 ```
 
-This copies the final binary to the UEFI boot path: `build/esp/EFI/BOOT/BOOTAA64.EFI`. The QEMU test script reads from this location.
+Copy the binary to the UEFI boot path. `BOOTAA64.EFI` is the standard name UEFI looks for on ARM64.
 
 ## Testing with QEMU
 
-Our `scripts/run-qemu.sh` creates a complete virtual ARM64 machine. Let's trace what happens when you run `./scripts/run-qemu.sh graphical`:
+The `scripts/run-qemu.sh` script creates a complete virtual ARM64 machine. Here's what it does:
 
-### 1. Find the Firmware
-
-```bash
-for fw in \
-    /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-    /usr/share/edk2/aarch64/QEMU_EFI.fd \
-    /usr/share/AAVMF/AAVMF_CODE.fd \
-    ...
-```
-
-Different Linux distributions install UEFI firmware at different paths. The script tries them in order. On Ubuntu/Debian, it's usually at the first path.
-
-### 2. Prepare Firmware Images
-
-```bash
-cp "$FIRMWARE" "$FW_COPY"
-truncate -s 64M "$FW_COPY"
-dd if=/dev/zero of="$VARS" bs=1M count=64 2>/dev/null
-```
-
-QEMU's pflash (persistent flash) requires the firmware images to be exactly 64 MB. The original `QEMU_EFI.fd` is smaller, so we pad it with `truncate`. The vars file stores UEFI variables (like boot order) — we create it empty.
-
-### 3. Create the Disk Image
-
-```bash
-dd if=/dev/zero of="$IMG" bs=1M count=64 2>/dev/null
-mkfs.vfat -F 32 "$IMG" >/dev/null 2>&1
-mmd -i "$IMG" "::EFI"
-mmd -i "$IMG" "::EFI/BOOT"
-mcopy -i "$IMG" "$ESP_DIR/EFI/BOOT/BOOTAA64.EFI" "::EFI/BOOT/BOOTAA64.EFI"
-```
-
-This creates a 64 MB FAT32 disk image and copies our binary into it. The `mtools` commands (`mmd`, `mcopy`) manipulate FAT32 images without mounting them — no root permissions needed. The `::` prefix means "the root of the disk image."
-
-### 4. Launch the VM
+1. **Finds UEFI firmware** — tries common paths for `QEMU_EFI.fd` across distros
+2. **Prepares firmware images** — pads to 64 MB for QEMU's pflash
+3. **Creates a FAT32 disk image** — `mkfs.vfat`, then copies our binary with `mtools`
+4. **Launches QEMU** with the right flags:
 
 ```bash
 qemu-system-aarch64 \
@@ -287,104 +408,52 @@ qemu-system-aarch64 \
     -serial stdio
 ```
 
-Breaking this down:
-
-| Flag | Purpose |
-|------|---------|
-| `-M virt` | Generic ARM virtual machine (not emulating specific hardware) |
-| `-cpu cortex-a53` | Same CPU as the Sweet Potato's S905X |
-| `-m 256M` | 256 MB RAM (plenty for testing) |
-| `-drive if=pflash...` (first) | UEFI firmware code (read-only) |
-| `-drive if=pflash...` (second) | UEFI variable storage (read-write) |
-| `-hda "$IMG"` | Our FAT32 disk with BOOTAA64.EFI |
-| `-device ramfb` | Simple linear framebuffer device |
-| `-device qemu-xhci` | USB 3.0 controller |
-| `-device usb-kbd` | Virtual USB keyboard |
-| `-device usb-mouse` | Virtual USB mouse |
-| `-serial stdio` | Connect serial port to terminal |
-
-The `ramfb` device is key. It provides a real, memory-mapped linear framebuffer — exactly like the hardware on the Sweet Potato. The alternative, `virtio-gpu-pci`, provides a GPU with command-based rendering but no linear framebuffer, which is why our framebuffer code can't use it.
-
-### Three Test Modes
+The `-device ramfb` flag is critical — it provides a real, memory-mapped linear framebuffer that our `fb_init()` can use. Without it (or with `virtio-gpu-pci`), `FrameBufferBase` is NULL and we fall back to console mode.
 
 The script supports three modes:
+- **`graphical`** — GTK window showing the framebuffer
+- **`console`** — no display, serial output only
+- **`vnc`** — framebuffer via VNC on port 5900
 
-**`graphical`** — Opens a GTK window showing the actual framebuffer output. You see exactly what would appear on a monitor connected to the Sweet Potato. Serial output also appears in your terminal.
+Run it:
 
-**`console`** — No display window. Uses `virtio-gpu-pci` with `-display none`, which means `fb_init()` fails and we fall back to console mode. All text output goes to your terminal via serial. Good for automated testing or SSH sessions.
+```bash
+make && ./scripts/run-qemu.sh graphical
+```
 
-**`vnc`** — Like graphical, but displays via VNC on port 5900. Useful for headless development servers. Connect with any VNC client to `localhost:5900`.
-
-## Lessons Learned Building Phase 1
-
-Building this 64 KB binary taught us several hard-won lessons. Let's document them for future reference.
-
-### The .rodata Section Must Be Included
-
-When converting from ELF to PE with `objcopy`, we list which sections to include with `-j` flags. Missing `-j .rodata` produces a binary that compiles and links without errors but crashes immediately at boot with "Synchronous Exception."
-
-This is because `.rodata` contains all string literals (`L"Hello"`, `"Booting..."`) and constant data (our entire font bitmap). Without it, any access to a string or constant reads from unmapped memory and triggers a page fault.
-
-This is a particularly nasty bug because there are no compiler or linker warnings. Everything looks fine until you try to run it.
-
-### Build Flags Must Match gnu-efi
-
-Our initial build used minimal flags and produced binaries that crashed. The fix was to match the flags that gnu-efi uses when building its own examples:
-
-- `-fPIC -fPIE` — Position-independent code (required for UEFI relocation)
-- `-fno-merge-all-constants` — Prevents constant merging that breaks relocations
-- `-pie` and `--no-dynamic-linker` — Linker produces a proper PIE without expecting a dynamic linker
-- `-z common-page-size=4096 -z max-page-size=4096` — Match UEFI's 4 KB page size
-- `-z norelro -z nocombreloc` — Disable security features that UEFI doesn't support
-
-When something doesn't work, look at how the library's own examples build.
-
-### Not All Display Devices Provide a Framebuffer
-
-UEFI's GOP protocol can exist even when there's no usable framebuffer. `LocateProtocol` succeeds, `QueryMode` succeeds, but `FrameBufferBase` is NULL or zero. Our `fb_init()` checks for this and fails gracefully, falling back to console mode.
-
-Always validate what you get from hardware, even when the API says it succeeded.
-
-### Link Order Matters
-
-The CRT startup code must come first. Libraries must come after the code that references them. Getting this wrong produces cryptic linker errors or binaries that crash at startup because relocations aren't processed correctly.
-
-### Kernel-Style Freestanding C
-
-With `-ffreestanding`, GCC promises not to call standard library functions. But it doesn't always keep that promise — struct copies and array initializations can still generate calls to `memcpy` and `memset`. Linking with `libgcc.a` usually provides these, but be aware of the trap.
+You should see the green banner, platform and resolution info, memory size, and a prompt waiting for input.
 
 ## What We Built
 
-Let's take stock. Our Phase 1 binary:
+Phase 1 is complete. Our binary:
 
 - Boots on an ARM64 machine via UEFI
 - Initializes a framebuffer and renders text with an 8x16 bitmap font
-- Accepts keyboard input and echoes characters to screen
+- Shows platform, display, and memory information at startup
 - Falls back to console mode when no framebuffer is available
-- Shuts down cleanly on ESC
+- Accepts keyboard input
+- Shuts down cleanly
 - Is 64 KB total — smaller than many JPEG images
 
 The codebase:
 
 ```
-src/boot.h    — 40 lines   Global state, color constants
-src/main.c    — 175 lines  Entry point, two main loops
-src/fb.c      — 120 lines  Framebuffer driver
-src/fb.h      — 20 lines   Framebuffer API
+src/boot.h    — 42 lines   Global state, color constants
+src/main.c    — 161 lines  Entry point, two main loops, banners
+src/fb.c      — 127 lines  Framebuffer driver
+src/fb.h      — 25 lines   Framebuffer API
 src/font.c    — 280 lines  Bitmap font data (mostly data, not logic)
-src/font.h    — 12 lines   Font constants
-src/kbd.c     — 52 lines   Keyboard input
-src/kbd.h     — 40 lines   Key codes
+src/font.h    — 16 lines   Font constants
+src/kbd.c     — 53 lines   Keyboard input
+src/kbd.h     — 41 lines   Key codes
 src/mem.c     — 35 lines   Memory allocator
-src/mem.h     — 18 lines   Memory API
+src/mem.h     — 19 lines   Memory API
 ```
 
 About 800 lines total, of which 280 are font bitmap data. The actual logic is roughly 500 lines of C.
 
 ## What Comes Next
 
-Phase 1 proves that our approach works. We can build a UEFI application, test it in QEMU, and run it on real ARM64 hardware. We have a foundation — screen, keyboard, memory — that everything else builds on.
+Phase 1 proves that our approach works. We have a foundation — screen, keyboard, memory — that everything else builds on.
 
-Phase 2 will add FAT32 filesystem access using UEFI's Simple File System Protocol. This lets us read files from the SD card — opening the door to loading survival documentation, source code, and eventually, compiling and running programs right on the device.
-
-The journey from "Hello, UEFI" to a fully self-hosting survival workstation is long, but every step builds directly on what came before. We have our foundation. Now we build on it.
+Phase 2 will add FAT32 filesystem access using UEFI's Simple File System Protocol. This lets us read files from the SD card — opening the door to loading survival documentation, source code, and eventually, compiling and running programs right on the device. Once the filesystem is in place, the banner will grow a "Disk" line showing free and total space.
