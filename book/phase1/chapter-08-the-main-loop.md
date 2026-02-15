@@ -440,7 +440,7 @@ The codebase:
 ```
 src/boot.h    — 42 lines   Global state, color constants
 src/main.c    — 161 lines  Entry point, two main loops, banners
-src/fb.c      — 127 lines  Framebuffer driver
+src/fb.c      — 185 lines  Framebuffer driver
 src/fb.h      — 25 lines   Framebuffer API
 src/font.c    — 280 lines  Bitmap font data (mostly data, not logic)
 src/font.h    — 16 lines   Font constants

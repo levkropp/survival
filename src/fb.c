@@ -12,6 +12,37 @@ EFI_STATUS fb_init(void) {
 
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = g_boot.gop;
 
+    /* GOP method casts (protocol stores them as void *) */
+    typedef EFI_STATUS (*GOP_QUERY)(EFI_GRAPHICS_OUTPUT_PROTOCOL *,
+                                    UINT32, UINTN *,
+                                    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **);
+    typedef EFI_STATUS (*GOP_SET)(EFI_GRAPHICS_OUTPUT_PROTOCOL *, UINT32);
+    GOP_QUERY query_mode = (GOP_QUERY)gop->QueryMode;
+    GOP_SET   set_mode   = (GOP_SET)gop->SetMode;
+
+    /* Hard-limit resolution to 800x600 to keep framebuffer draws fast */
+    UINT32 max_w = 800;
+    UINT32 max_h = 600;
+
+    UINT32 best_mode = gop->Mode->Mode;
+    UINT32 best_pixels = 0;
+
+    for (UINT32 m = 0; m < gop->Mode->MaxMode; m++) {
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *info;
+        UINTN info_size;
+        if (EFI_ERROR(query_mode(gop, m, &info_size, &info)))
+            continue;
+        UINT32 w = info->HorizontalResolution;
+        UINT32 h = info->VerticalResolution;
+        if (w <= max_w && h <= max_h && w * h > best_pixels) {
+            best_pixels = w * h;
+            best_mode = m;
+        }
+    }
+
+    if (best_mode != gop->Mode->Mode)
+        set_mode(gop, best_mode);
+
     g_boot.framebuffer = (UINT32 *)(UINTN)gop->Mode->FrameBufferBase;
     g_boot.fb_width = gop->Mode->Info->HorizontalResolution;
     g_boot.fb_height = gop->Mode->Info->VerticalResolution;
@@ -21,8 +52,7 @@ EFI_STATUS fb_init(void) {
     if (g_boot.framebuffer == NULL || g_boot.fb_size == 0)
         return EFI_UNSUPPORTED;
 
-    /* Auto-detect scale: 2x for screens wider than 1920 pixels */
-    g_boot.scale = (g_boot.fb_width > 1920) ? 2 : 1;
+    g_boot.scale = 1;
 
     g_boot.cols = g_boot.fb_width / (FONT_WIDTH * g_boot.scale);
     g_boot.rows = g_boot.fb_height / (FONT_HEIGHT * g_boot.scale);
