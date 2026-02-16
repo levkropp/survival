@@ -1405,3 +1405,7 @@ About 700 lines of C, implementing a complete text editor that runs on bare UEFI
 This completes Phase 2. The workstation is now a usable read/write system -- you can browse files, open them in an editor, make changes, save, and create new files. It is not fancy, but it works. You could write survival notes, document procedures, or draft code with it.
 
 Phase 3 will add TinyCC, turning the workstation into a system that can compile and run its own programs. The editor will gain F5 (compile and run) and F6 (rebuild the workstation from its own source code). But the foundation we built here -- the line buffer, the document operations, the selection model, the drawing engine -- remains unchanged. Everything we add in Phase 3 builds on top of this editor.
+
+---
+
+**Next:** [Chapter 13: The C Compiler](../phase3/chapter-13-the-c-compiler)

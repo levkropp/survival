@@ -3206,3 +3206,7 @@ The design decisions are worth revisiting. We chose a write-back sector cache wi
 We also built the volume abstraction to be extensible. Adding support for another filesystem -- say, ext4 or HFS+ -- would mean implementing a new driver with the same callback interface, adding a new value to `fs_vol_type`, and extending the dispatch blocks in `fs.c`. No changes to the browser or editor would be needed.
 
 The 32-gigabyte wall is gone. In the next chapter, we will add NTFS read support, handling the other major filesystem found on USB drives. That driver is read-only -- NTFS write support would be an order of magnitude more complex -- but being able to read files from NTFS drives covers the most common use case: recovering data from Windows-formatted storage.
+
+---
+
+**Next:** [Chapter 26: Reading NTFS](chapter-26-reading-ntfs)

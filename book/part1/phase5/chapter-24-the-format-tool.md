@@ -488,3 +488,7 @@ This completes the device lifecycle. A USB drive can be:
 The cycle is complete. No USB drive is ever permanently lost to the workstation. Whatever state it arrives in -- NTFS, ext4, ISO 9660, corrupted, stale-cached, or just full of junk -- the workstation can bring it back to FAT32 and put it to use.
 
 Phase 5 is complete. The workstation started as a blank screen and a blinking cursor. Twenty-four chapters later, it edits code, compiles itself, browses USB drives, clones itself onto new media, writes bootable disk images, and formats any drive back to FAT32. All of it fits in under 4 MB. All of it runs without an operating system. All of it can rebuild itself from source.
+
+---
+
+**Next:** [Chapter 25: Reading and Writing exFAT](../phase5_5/chapter-25-reading-and-writing-exfat)

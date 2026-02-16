@@ -415,3 +415,7 @@ The application boots, prints a banner, echoes keystrokes to the UEFI console, a
 But we're drawing text using UEFI's built-in console, which is limited — we can't control colors, position, or font. To build a real workstation UI, we need to draw our own pixels. That requires two things: memory management (to allocate buffers) and a framebuffer driver (to paint pixels on screen).
 
 We'll tackle memory first. It's the simpler problem, and the framebuffer code will need it.
+
+---
+
+**Next:** [Chapter 5: Memory Without an OS](chapter-05-memory-without-an-os)

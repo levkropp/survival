@@ -777,4 +777,6 @@ fat32.h    49 lines   Interface: format, mkdir, write_file, stream_open/write/cl
 
 This is the core of the flasher — the code that creates the filesystem that UEFI firmware reads. Every field, every magic number, every byte offset matters. Get the BPB wrong and the card won't boot. Get the FAT entries wrong and files are corrupted. Get the LFN checksum wrong and filenames appear as `TCC-HE~1` instead of `tcc-headers`.
 
-Next: packing the workstation payload into the ESP32's flash.
+---
+
+**Next:** [Chapter 33: Packing the Payload](chapter-33-packing-the-payload)

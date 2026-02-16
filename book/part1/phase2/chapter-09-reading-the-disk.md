@@ -618,3 +618,7 @@ The rest of our workstation never needs to know about `HandleProtocol`, `EFI_LOA
 This clean abstraction is not just aesthetic. When we later add the compiler shim in Chapter 13, TCC's `open()` call will use `fs_readfile` to load header files. When the editor saves in Chapter 11, it will use `fs_writefile`. When the browser pastes files in Chapter 10, it will use `fs_exists` to check for conflicts. Every feature we build from here on stands on this filesystem layer.
 
 Next: building the interactive file browser UI on top of it.
+
+---
+
+**Next:** [Chapter 10: Browsing Files](chapter-10-browsing-files)

@@ -387,3 +387,7 @@ $ ls -lh build/survival.efi
 632 kilobytes. That's a bootloader, framebuffer driver, keyboard input, filesystem, file browser, text editor, and a C compiler that generates and executes ARM64 machine code in memory. It fits on a floppy disk with room to spare.
 
 The workstation is no longer inert. It can create.
+
+---
+
+**Next:** [Chapter 15: Teaching TCC to Output UEFI](chapter-15-teaching-tcc-to-output-uefi)

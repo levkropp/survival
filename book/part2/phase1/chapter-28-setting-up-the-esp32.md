@@ -344,3 +344,7 @@ The `continue` after an SD card failure returns to the top of the loop, showing 
 A project that builds, flashes, and boots. The display shows a splash screen, the touch controller is ready, and the main loop waits for input. The serial log confirms each subsystem initialized.
 
 The real work starts in the next chapter, where we dig into how the display and touch drivers actually work — SPI bus configuration, ILI9341 initialization, landscape orientation, and the bit-banged touch protocol.
+
+---
+
+**Next:** [Chapter 29: Driving the Display](chapter-29-driving-the-display)

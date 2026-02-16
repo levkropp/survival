@@ -572,3 +572,7 @@ Here's every TCC file we touched, and why:
 | `arm64-link.c` | GOT relaxation | ADRP+LDR to ADRP+ADD when no GOT |
 
 Fourteen changes. The biggest — GOT relaxation — is about 15 lines of new code. The rest are one-line guard widenings. But without any single one of them, the self-hosting rebuild doesn't work.
+
+---
+
+**Next:** [Chapter 16: The Self-Hosting Rebuild](chapter-16-the-self-hosting-rebuild)

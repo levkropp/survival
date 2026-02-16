@@ -2160,3 +2160,7 @@ $ ls -lh build/survival.efi
 632 kilobytes. That's a bootloader, framebuffer driver, keyboard input, filesystem, file browser, text editor, and a C compiler that generates and executes ARM64 machine code in memory. It fits on a floppy disk with room to spare.
 
 In the next chapter, we'll flesh out `tcc.c` into a proper runtime wrapper — with error capture, API registration, exit handling — and wire F5 in the editor to compile-and-run. The workstation will go from "can compile return 42" to "user writes code and runs it."
+
+---
+
+**Next:** [Chapter 14: Write, Run, Repeat](chapter-14-write-run-repeat)

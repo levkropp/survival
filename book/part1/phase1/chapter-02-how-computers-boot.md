@@ -221,3 +221,7 @@ Using UEFI means following certain rules:
 - The `EFI_SYSTEM_TABLE` is our gateway to everything the firmware provides
 
 In the next chapter, we'll set up the tools we need to cross-compile UEFI applications from our development machine.
+
+---
+
+**Next:** [Chapter 3: Setting Up the Workshop](chapter-03-setting-up-the-workshop)

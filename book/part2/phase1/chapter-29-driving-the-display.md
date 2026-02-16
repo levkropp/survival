@@ -685,4 +685,6 @@ ui.h         32 lines   UI interface
 
 The display draws text and rectangles. The touchscreen reads tap coordinates. The UI module combines them into a usable interface with buttons, a progress bar, and status messages. No graphics library, no widget toolkit — just rectangles and bitmap characters, same as Part 1.
 
-Next: talking to the SD card.
+---
+
+**Next:** [Chapter 30: Talking to the SD Card](chapter-30-talking-to-the-sd-card)

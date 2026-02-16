@@ -339,3 +339,7 @@ The editor now shows C code in color. Open any `.c` or `.h` file and highlightin
 Open a plain text file and you get the same white-on-black rendering as before. The highlighting is invisible unless you're editing C source.
 
 This is a small feature measured by lines of code, but a large one measured by hours of use. Every minute spent reading code in the editor benefits from the visual structure that colors provide.
+
+---
+
+**Next:** [Chapter 19: USB Volumes](../phase4/chapter-19-usb-volumes)

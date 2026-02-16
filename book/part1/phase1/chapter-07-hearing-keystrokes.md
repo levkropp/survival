@@ -353,3 +353,7 @@ src/main.c   — Entry point (still using console loop)
 ```
 
 We now have all the pieces: screen output (framebuffer), text rendering (font), and input (keyboard with modifier awareness). The next chapter wires them together into a working application with a framebuffer-based main loop.
+
+---
+
+**Next:** [Chapter 8: The Main Loop](chapter-08-the-main-loop)

@@ -483,3 +483,7 @@ The seven fixes, in order:
 The first fix -- `TCC_TARGET_PE` -- is the keystone. Without it, TCC generates the wrong code for x86_64 UEFI. Fixes 2 through 4 are the collateral damage from enabling it: Windows-specific code that must be guarded out. Fix 5 is the data model mismatch that PE mode introduces. Fix 6 is the runtime support function that PE mode requires. Fix 7 is the subtlest -- the PE import resolution assumed that in-memory execution only happens on Windows, so on UEFI it silently wrote wrong addresses into the IAT, breaking every call to a registered symbol.
 
 On ARM64, self-hosting required GOT relaxation -- a deep linker patch because ARM64's code generator always uses GOT-indirect addressing. On x86_64, `TCC_TARGET_PE` activates an existing, well-tested code path. The x86_64 fixes are smaller and more surgical: guard out Windows-isms, fix type sizes, provide one runtime function, fix one platform assumption. Different architecture, different path to the same result.
+
+---
+
+**Next:** [Chapter 17: Syntax Highlighting](../phase3_5/chapter-17-syntax-highlighting)

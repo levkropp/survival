@@ -327,3 +327,7 @@ src/main.c   — Entry point, console I/O loop, shutdown
 We still can't do anything visible with this — the application behaves exactly the same as before. But we've laid the foundation for everything that follows. The framebuffer driver needs `mem_set` to clear the screen, `mem_copy` to scroll, and `mem_alloc` to create buffers. The file browser will need `mem_alloc` to load file contents. Every module from here on will `#include "mem.h"`.
 
 Next, we put memory to work — painting pixels on the screen.
+
+---
+
+**Next:** [Chapter 6: Painting Pixels](chapter-06-painting-pixels)

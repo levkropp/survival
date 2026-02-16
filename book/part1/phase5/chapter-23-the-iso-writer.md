@@ -411,3 +411,7 @@ The implementation is about 350 lines of new code across iso.c, iso.h, and the b
 This is a pattern that recurs throughout the workstation. The filesystem operations, the block device operations, the memory allocator -- each is a thin wrapper around a UEFI protocol call. The real work is in deciding when to call them, what to show the user, and how to handle the cases where things go wrong. A streaming block write is ten lines. A safe, informative, cancelable streaming block write with device selection and same-device detection is three hundred.
 
 The escape hatch is open. The workstation can now propagate itself (Chapter 20) and escape itself (this chapter). But there is one more gap to close: after writing an ISO to a USB drive, that drive is no longer FAT32 -- it cannot be browsed, cloned to, or reused without external tools. Chapter 24 adds the format tool, which brings these orphaned devices back into the fold.
+
+---
+
+**Next:** [Chapter 24: The Format Tool](chapter-24-the-format-tool)

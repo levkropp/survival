@@ -159,3 +159,7 @@ The file-by-file approach is more code (we have to implement GPT and FAT32 creat
 In the next chapter, we set up the ESP-IDF toolchain, create the project skeleton, and get our first signs of life from the display. The ESP32 is a different world from UEFI — we have an RTOS, a proper SDK, and a C standard library. But the constraint is tighter: 520 KB of RAM instead of gigabytes, and SPI buses instead of memory-mapped framebuffers.
 
 The survival workstation is about to get a pocket-sized deployment device.
+
+---
+
+**Next:** [Chapter 28: Setting Up the ESP32](chapter-28-setting-up-the-esp32)

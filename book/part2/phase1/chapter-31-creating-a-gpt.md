@@ -368,3 +368,7 @@ gpt.h    22 lines   Interface: create, query start LBA, query size
 217 lines for a complete GPT implementation. The structures are straightforward — the complexity is in the details: mixed-endian GUIDs, self-referential CRC32 computation, the incremental CRC across 32 sectors of entries, the protective MBR for backwards compatibility, and the backup copy at the end of the disk.
 
 The SD card now has a valid partition table. Next, we fill that partition with a FAT32 filesystem.
+
+---
+
+**Next:** [Chapter 32: Building FAT32](chapter-32-building-fat32)

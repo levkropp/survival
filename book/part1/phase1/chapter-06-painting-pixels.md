@@ -560,3 +560,7 @@ We can draw pixels, rectangles, characters, and strings. We can scroll the scree
 But we can't use any of this yet — `main.c` still runs the console loop from Chapter 4. We need keyboard input to make it interactive, and then we need to wire everything together in the main loop.
 
 Next: hearing from the keyboard.
+
+---
+
+**Next:** [Chapter 7: Hearing Keystrokes](chapter-07-hearing-keystrokes)

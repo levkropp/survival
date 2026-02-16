@@ -465,3 +465,7 @@ About 800 lines total, of which 280 are font bitmap data. The actual logic is ro
 Phase 1 proves that our approach works. We have a foundation — screen, keyboard, memory — that everything else builds on.
 
 Phase 2 will add FAT32 filesystem access using UEFI's Simple File System Protocol. This lets us read files from the SD card — opening the door to loading survival documentation, source code, and eventually, compiling and running programs right on the device. Once the filesystem is in place, the banner will grow a "Disk" line showing free and total space.
+
+---
+
+**Next:** [Chapter 9: Reading the Disk](../phase2/chapter-09-reading-the-disk)

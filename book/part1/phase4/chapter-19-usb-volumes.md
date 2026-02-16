@@ -495,3 +495,7 @@ The implementation required:
 The binary grew by about 2 KB. The key insight was that the filesystem abstraction from Chapter 9 -- a single `s_root` handle through which all operations flow -- made USB support almost free. Swap the handle, and the entire filesystem module redirects. No changes to `fs_readfile`, `fs_writefile`, `fs_readdir`, or any function that reads or writes files.
 
 In the next chapter, we will use this foundation to clone the entire workstation onto a USB drive -- making it bootable on a second machine.
+
+---
+
+**Next:** [Chapter 20: Cloning to USB](chapter-20-cloning-to-usb)

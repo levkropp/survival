@@ -234,3 +234,7 @@ Seven functions in `fs.c`, one in `disk.c`. About 80 lines of code total. No new
 - `disk_write_blocks_force` permits confirmed destructive writes to the boot device
 
 These are the pipes and valves that Chapter 23 will connect. The ISO writer will open an ISO file with `fs_open_read`, read it one megabyte at a time with `fs_stream_read`, and write each megabyte to a block device with `disk_write_blocks_force`. The data flows through without ever needing 3 GB of RAM -- just one buffer, reused over and over, chunk by chunk.
+
+---
+
+**Next:** [Chapter 23: The ISO Writer](chapter-23-the-iso-writer)

@@ -1308,3 +1308,7 @@ The file browser is now a complete file management tool running on bare-metal UE
 The codebase grew by about 900 lines -- `browse.c` at roughly 700 lines plus `fs_rename` and `fs_volume_info` in `fs.c`. The path manipulation, drawing, and file management functions are all self-contained in `browse.c` with no global state leaking to other modules. Every function is small enough to understand in isolation, and the main loop is a straightforward switch statement mapping keys to actions.
 
 In the next chapter, we build the text editor -- the companion to this browser. Together, they form the core user interface of the survival workstation: browse to find files, press Enter to edit them, save and return. Everything after that -- the compiler, the self-hosting, the USB tools -- builds on this foundation.
+
+---
+
+**Next:** [Chapter 11: Writing to Disk](chapter-11-writing-to-disk)

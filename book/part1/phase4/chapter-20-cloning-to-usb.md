@@ -304,3 +304,7 @@ This is a complete lifecycle. A single SD card boots a workstation that can modi
 Like a seed that contains the blueprint for the whole plant, plus the machinery to execute that blueprint, plus the ability to produce new seeds. The workstation carries its source, its compiler, and its cloning mechanism in a single FAT32 partition under 4MB.
 
 Any USB drive becomes a new survival workstation. Any UEFI machine becomes a potential host. The system has escaped the single point of failure we started this chapter worrying about. It is no longer fragile. It propagates.
+
+---
+
+**Next:** [Chapter 21: Eating Your Own Dogfood](../phase4_5/chapter-21-eating-your-own-dogfood)

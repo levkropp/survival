@@ -390,3 +390,7 @@ Both come from the same patched TCC source in `tools/tinycc/`. Both use the same
 This is the logical conclusion of self-hosting. Not just "the system can rebuild itself" but "the system is built by itself, always." The development build and the production build use the same compiler. The host machine and the target machine use the same compiler. There is no privileged external tool that the system depends on but cannot reproduce.
 
 The workstation carries its own compiler. Now its build system uses that same compiler. The circle is complete.
+
+---
+
+**Next:** [Chapter 22: Streaming I/O](../phase5/chapter-22-streaming-io)

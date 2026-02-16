@@ -3359,3 +3359,7 @@ Two bugs were found and fixed during development, both in areas where the NTFS d
 The driver does not write. It does not handle compression, encryption, sparse files, or alternate data streams. It does not replay the journal. It is a reader, and only a reader, and that is exactly what a survival workstation needs.
 
 Plug in a Windows user's USB drive. Browse into it. Open their files. Copy what you need. The data is off the drive. That is the entire point.
+
+---
+
+**Next:** [Chapter 27: The Pocket Flasher](../../part2/phase1/chapter-27-the-pocket-flasher)

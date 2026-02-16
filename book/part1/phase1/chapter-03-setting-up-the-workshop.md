@@ -607,3 +607,7 @@ make all-arches
 - x86_64 UEFI requires `-mno-red-zone` and MS ABI calling convention wrappers
 
 Now that we have our tools ready, let's write some actual code.
+
+---
+
+**Next:** [Chapter 4: Hello, UEFI](chapter-04-hello-uefi)

@@ -254,3 +254,7 @@ sdcard.h    33 lines   Interface
 131 lines, most of which is initialization boilerplate. The actual I/O is two functions of 10 lines each. ESP-IDF's SD card stack handles the hard parts — the SPI protocol, the initialization command sequence, the CRC checks, the DMA transfers. We provide a clean sector-level abstraction on top.
 
 The layer below is complete. We can read and write arbitrary sectors on the SD card. Now we need to write something meaningful: a GPT partition table.
+
+---
+
+**Next:** [Chapter 31: Creating a GPT](chapter-31-creating-a-gpt)

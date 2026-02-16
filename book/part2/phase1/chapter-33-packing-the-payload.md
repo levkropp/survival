@@ -357,3 +357,7 @@ scripts/pack_payload.py  179 lines   Payload packer: collect, compress, pack
 The packing pipeline is split across two worlds: Python on the build machine (collect files, compress, produce the binary blob) and C on the ESP32 (memory-map the blob, parse the manifest, provide data pointers to the flasher). The binary format bridges them — structured enough to parse without a JSON library, compact enough to fit in 2.6 MB.
 
 The payload is the last piece before we can flash. We have a GPT partition table (Chapter 31), a FAT32 filesystem (Chapter 32), and a compressed workstation image (this chapter). All that remains is wiring them together.
+
+---
+
+**Next:** [Chapter 34: Flash!](chapter-34-flash)

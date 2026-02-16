@@ -158,3 +158,7 @@ This book is organized by phase. In Phase 1 (these chapters), we build the found
 By the end of Phase 1, we'll have a working system that boots on real hardware (or in an emulator), displays text on screen, and accepts keyboard input. It's not much to look at — just a blinking cursor on a black screen — but it represents something remarkable: a computer running *your* code with nothing else between you and the machine.
 
 Let's begin.
+
+---
+
+**Next:** [Chapter 2: How Computers Boot](chapter-02-how-computers-boot)

@@ -223,3 +223,7 @@ Around 35 lines of code for `fs_writefile`, plus 25 lines for `doc_save` and `ha
 The API surface is intentionally minimal. One function to write a file, one function to save the document, one function to handle the UI. No append mode, no partial writes, no file locking, no temporary files. Every one of those features would add complexity for scenarios that a single-user workstation does not face. If we need them later, we can add them later.
 
 With this chapter, the workstation crosses a threshold. It is no longer a viewer. You can open a file, edit it, press F2, and the changes persist across reboots. The SD card is now a working storage medium, not just a boot device. Everything that follows — the compiler, the file browser's copy and paste, the self-hosting rebuild — depends on this ability to write.
+
+---
+
+**Next:** [Chapter 12: The Text Editor](chapter-12-the-text-editor)

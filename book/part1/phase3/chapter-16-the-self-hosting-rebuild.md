@@ -306,3 +306,7 @@ x86_64:  662K
 Both well under the 4MB budget, even carrying all source code and TCC library files on the FAT32 filesystem.
 
 The workstation is no longer dependent on its creator. It can evolve on its own.
+
+---
+
+**Next:** [Chapter 18: x86_64 Self-Hosting](chapter-18-x86-64-self-hosting)
