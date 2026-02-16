@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 5: Memory Without an OS"
+parent: "Phase 1: Boot & Input"
+nav_order: 5
+---
+
 # Chapter 5: Memory Without an OS
 
 ## The Missing Floor

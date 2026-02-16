@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 4: Hello, UEFI"
+parent: "Phase 1: Boot & Input"
+nav_order: 4
+---
+
 # Chapter 4: Hello, UEFI
 
 ## The Bare Minimum

@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 20: Cloning to USB"
+parent: "Phase 4: USB & Cloning"
+nav_order: 2
+---
+
 # Chapter 20: Cloning to USB
 
 ## The Seed

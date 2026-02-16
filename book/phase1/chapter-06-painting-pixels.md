@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 6: Painting Pixels"
+parent: "Phase 1: Boot & Input"
+nav_order: 6
+---
+
 # Chapter 6: Painting Pixels
 
 ## Escaping the Console

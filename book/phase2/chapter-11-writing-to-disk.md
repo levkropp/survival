@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 11: Writing to Disk"
+parent: "Phase 2: Filesystem & Editor"
+nav_order: 3
+---
+
 # Chapter 11: Writing to Disk
 
 ## The Missing Half

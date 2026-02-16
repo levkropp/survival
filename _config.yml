@@ -1,0 +1,28 @@
+theme: just-the-docs
+
+title: "Survival Workstation"
+description: "Building a bare-metal UEFI workstation from scratch"
+baseurl: "/survival"
+url: "https://levkropp.github.io"
+
+color_scheme: dark
+
+aux_links:
+  "GitHub":
+    - "https://github.com/levkropp/survival"
+
+exclude:
+  - src/
+  - tools/
+  - build/
+  - scripts/
+  - docs/
+  - esp32/
+  - Makefile
+  - "*.efi"
+  - "*.o"
+  - "*.so"
+  - "*.img"
+  - CLAUDE.md
+  - Gemfile
+  - Gemfile.lock

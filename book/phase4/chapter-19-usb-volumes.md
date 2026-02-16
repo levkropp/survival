@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 19: USB Volumes"
+parent: "Phase 4: USB & Cloning"
+nav_order: 1
+---
+
 # Chapter 19: USB Volumes
 
 ## The Island Problem

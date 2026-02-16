@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 8: The Main Loop"
+parent: "Phase 1: Boot & Input"
+nav_order: 8
+---
+
 # Chapter 8: The Main Loop
 
 ## Wiring It Together

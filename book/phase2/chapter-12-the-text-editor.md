@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 12: The Text Editor"
+parent: "Phase 2: Filesystem & Editor"
+nav_order: 4
+---
+
 # Chapter 12: The Text Editor
 
 ## From Viewer to Editor

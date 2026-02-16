@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 24: The Format Tool"
+parent: "Phase 5: Streaming I/O & Tools"
+nav_order: 3
+---
+
 # Chapter 24: The Format Tool
 
 ## The Invisible Drive

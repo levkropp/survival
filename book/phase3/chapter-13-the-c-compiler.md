@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 13: The C Compiler"
+parent: "Phase 3: The C Compiler"
+nav_order: 1
+---
+
 # Chapter 13: The C Compiler
 
 ## Why a Compiler?
@@ -26,7 +33,7 @@ Clone the TCC source into `tools/`:
 git clone https://repo.or.cz/tinycc.git tools/tinycc
 ```
 
-For now, we don't modify TCC's source code. All adaptation happens in our shim layer — a set of files that make TCC's Linux-expecting code work in our UEFI environment. (In Phase 4, when we teach TCC to output UEFI PE binaries and make the workstation self-hosting, we'll need to patch TCC itself — but that's a story for later.)
+For now, we don't modify TCC's source code. All adaptation happens in our shim layer — a set of files that make TCC's Linux-expecting code work in our UEFI environment. (When we teach TCC to output UEFI PE binaries and make the workstation self-hosting, we'll need to patch TCC itself — but that's a story for later.)
 
 ## The Shim Layer
 

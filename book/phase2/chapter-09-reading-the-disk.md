@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 9: Reading the Disk"
+parent: "Phase 2: Filesystem & Editor"
+nav_order: 1
+---
+
 # Chapter 9: Reading the Disk
 
 ## From Pixels to Files

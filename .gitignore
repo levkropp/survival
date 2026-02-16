@@ -2,3 +2,5 @@ build/
 tools/gnu-efi/
 .claude/
 *.iso
+_site/
+.jekyll-cache/

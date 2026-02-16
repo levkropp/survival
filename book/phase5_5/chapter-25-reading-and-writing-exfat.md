@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 25: Reading and Writing exFAT"
+parent: "Phase 5.5: exFAT & NTFS"
+nav_order: 1
+---
+
 # Chapter 25: Reading and Writing exFAT
 
 ## The 32-Gigabyte Wall

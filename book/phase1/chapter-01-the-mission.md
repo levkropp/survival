@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 1: The Mission"
+parent: "Phase 1: Boot & Input"
+nav_order: 1
+---
+
 # Chapter 1: The Mission
 
 ## What Are We Building?
@@ -8,12 +15,12 @@ That's the question this project answers.
 
 We're building a **survival workstation** — a completely self-contained computer system that:
 
-- Boots from a blank microSD card
+- Boots on any computer with UEFI firmware — x86_64 or ARM64
 - Does **not** require Linux, Windows, or any operating system
 - Includes a C compiler (TinyCC) so you can write and run programs
 - Has a graphical interface with a text editor and file browser
 - Contains an offline library of survival knowledge — first aid, water purification, agriculture, electrical repair, radio communication, and more
-- Fits the **entire system** in 8 megabytes (or a stripped-down version in 4 MB)
+- Fits the **entire system** in 4 megabytes — small enough to store on an ESP32's flash
 - Can be flashed onto an SD card by a tiny $7 ESP32 device
 
 The goal is maximal apocalypse practicality with minimal complexity.
@@ -32,62 +39,34 @@ You might wonder: why not just run Linux? It's free, it's open source, it runs o
 
 ## The Hardware
 
-### The Computer: Libre Computer Sweet Potato V2
+### The Computer: Any UEFI Machine
 
-Our target is the **Libre Computer AML-S905X-CC-V2**, affectionately called the "Sweet Potato." It's a single-board computer similar to a Raspberry Pi, but with some advantages for our use case.
+Our workstation is a standard UEFI application. It runs on any computer with UEFI firmware — x86_64 laptops, desktops, servers, ARM64 single-board computers, or anything else that implements the UEFI specification. We build for two architectures:
 
-```
-┌──────────────────────────────────────────┐
-│  Libre Computer Sweet Potato V2          │
-│  ┌──────────────────────────────────┐    │
-│  │  Amlogic S905X SoC               │    │
-│  │  ┌───────────┐  ┌───────────┐   │    │
-│  │  │ Cortex-A53│  │ Cortex-A53│   │    │
-│  │  │  Core 0   │  │  Core 1   │   │    │
-│  │  └───────────┘  └───────────┘   │    │
-│  │  ┌───────────┐  ┌───────────┐   │    │
-│  │  │ Cortex-A53│  │ Cortex-A53│   │    │
-│  │  │  Core 2   │  │  Core 3   │   │    │
-│  │  └───────────┘  └───────────┘   │    │
-│  └──────────────────────────────────┘    │
-│                                          │
-│  RAM: 2 GB DDR3                          │
-│                                          │
-│  [HDMI]  [USB]  [USB]  [microSD]  [USB-C]│
-│   video   kbd   mouse   storage    power │
-└──────────────────────────────────────────┘
-```
+- **aarch64** (ARM64) — single-board computers, ARM servers, phones repurposed as computers
+- **x86_64** — any modern PC, laptop, or server built in the last 15 years
 
-Let's break down what matters:
+What the computer needs:
 
-**SoC: Amlogic S905X.** "SoC" stands for System-on-Chip. Instead of having a separate CPU, memory controller, and I/O chips like a desktop PC, everything is integrated into one chip. The S905X contains:
+**UEFI firmware.** Nearly all modern computers have this. It's the standard firmware interface that replaced the old PC BIOS. On ARM boards, bootloaders like U-Boot or EDK2 provide UEFI. On PCs, the motherboard firmware is UEFI natively.
 
-- Four ARM Cortex-A53 CPU cores (64-bit, ARMv8-A architecture)
-- A Mali-450 GPU (which we won't use)
-- HDMI output circuitry
-- USB controllers
-- An SD/MMC card interface
-- A UART (serial port) for debugging
+**A display.** HDMI, DisplayPort, or any output the firmware can drive. We use UEFI's Graphics Output Protocol (GOP) to paint pixels, so any display the firmware supports will work.
 
-**ARM Cortex-A53.** This is the CPU core. "ARM" is a processor architecture — a different language of machine instructions than the x86 chips in your laptop. Where x86 uses instructions like `MOV EAX, 42`, ARM uses instructions like `MOV X0, #42`. Same idea, different encoding. The "A53" is a specific implementation designed for efficiency. The "64-bit" part (ARMv8-A) means it can address large amounts of memory and work with 64-bit values natively.
+**A USB keyboard.** For input. The firmware provides a keyboard protocol — we don't need to write USB drivers.
 
-**2 GB RAM.** More than enough. Our entire system fits in 8 MB, so we have roughly 250 times more RAM than we need for the code. The rest is available for compiling programs, editing files, and other runtime work.
+**Removable storage.** An SD card, USB drive, or any FAT32-formatted boot device. The entire system lives on this.
 
-**HDMI output.** This is how we display our GUI. The HDMI controller sends video data to any standard monitor or TV.
-
-**microSD slot.** This is our "hard drive." The entire system lives on an SD card.
-
-**USB ports.** For keyboard and mouse input.
-
-**USB-C power.** The board draws about 5 watts. A small solar panel can power it.
+**Power.** A solar panel, wall outlet, car battery — whatever you have. Most single-board computers draw under 5 watts.
 
 ### The Flasher: ESP32
 
-The ESP32 is a tiny microcontroller — much simpler than the Sweet Potato. Think of it as a programmable gadget rather than a computer. We use it for one job: writing the survival workstation image onto a blank SD card.
+The ESP32 is a tiny microcontroller with 4 MB of flash memory — cheap ($7), the size of a postage stamp, and can run for weeks on a battery. We use it for one job: writing the survival workstation image onto a blank SD card.
 
-Why not just use a laptop to write the SD card? Because in our scenario, you might not have a laptop. The ESP32 is cheap ($7), tiny, and can be pre-programmed with our system image. You insert a blank SD card, press a button, and it writes the image. Then you put that SD card in the Sweet Potato and boot.
+Why not just use a laptop to write the SD card? Because in our scenario, you might not have a laptop. The ESP32 stores the complete workstation image in its 4 MB of flash. You insert a blank SD card, press a button, and it writes the image. Then you put that SD card in any UEFI computer and boot.
 
-The ESP32 also serves as a standalone survival reference — its small screen can display essential survival instructions even without the Sweet Potato.
+This is our hard size constraint: **the entire workstation — binary, compiler, and survival documentation — must fit in 4 MB**.
+
+The ESP32 also serves as a standalone survival reference — its small screen can display essential survival instructions even without a computer.
 
 ### The Full Kit
 
@@ -96,10 +75,10 @@ Here's what the complete survival workstation looks like:
 ```
 ┌─────────────────────────────────────────────┐
 │                                             │
-│   [Solar Panel] ──── [USB-C] ──── [Sweet    │
-│                                    Potato]  │
+│   [Solar Panel] ──── [Power] ──── [Any UEFI │
+│                                    Computer]│
 │                                      │      │
-│                                    [HDMI]   │
+│                                   [Display] │
 │                                      │      │
 │                                  [Monitor]  │
 │                                             │
@@ -144,25 +123,24 @@ Hardware
 
 We talk to the hardware through UEFI — a thin firmware layer that provides basic services like "give me access to the screen" and "read from the keyboard." We'll explain UEFI in detail in Chapter 2.
 
-## The 8 MB Budget
+## The 4 MB Budget
 
-One of the most interesting constraints of this project is size. Our full system must fit in 8 MB. Here's our budget:
+One of the most interesting constraints of this project is size. Our entire system must fit in 4 MB — the flash capacity of an ESP32. Here's our budget:
 
 ```
 Component              Target Size
 ─────────────────────  ───────────
-Boot + runtime code       ~1 MB
-TinyCC compiler          ~1.2 MB
-GUI system               ~800 KB
-Filesystem + support     ~500 KB
-Survival documentation   ~3-4 MB
+UEFI binary (code)        ~650 KB
+TinyCC (compiled in)      (included above)
+Survival documentation   ~2-3 MB
+Overhead (FAT32, etc.)    ~200 KB
                         ─────────
-Total                   ~6.5-7.5 MB
+Total                   ~3-4 MB
 ```
 
-For the 4 MB "minimal" build, we cut the documentation to the five most essential categories and remove the search index.
+Both architecture binaries are well under 1 MB each — aarch64 is about 653 KB, x86_64 is about 522 KB. That leaves most of our 4 MB budget for survival documentation.
 
-For context: a single high-resolution photo on your phone is typically 3-5 MB. We're fitting an entire computer system with a compiler and a survival library in less space than two photos.
+For context: a single high-resolution photo on your phone is typically 3-5 MB. We're fitting an entire computer system with a compiler and a survival library in less space than one photo.
 
 ## The Road Ahead
 

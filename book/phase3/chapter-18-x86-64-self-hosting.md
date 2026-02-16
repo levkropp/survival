@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 18: x86_64 Self-Hosting"
+parent: "Phase 3: The C Compiler"
+nav_order: 5
+---
+
 # Chapter 18: x86_64 Self-Hosting
 
 ## The Crash

@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 22: Streaming I/O"
+parent: "Phase 5: Streaming I/O & Tools"
+nav_order: 1
+---
+
 # Chapter 22: Streaming I/O
 
 ## The Size Wall

@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 3: Setting Up the Workshop"
+parent: "Phase 1: Boot & Input"
+nav_order: 3
+---
+
 # Chapter 3: Setting Up the Workshop
 
 ## The Cross-Compilation Problem

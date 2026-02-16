@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 16: The Self-Hosting Rebuild"
+parent: "Phase 3: The C Compiler"
+nav_order: 4
+---
+
 # Chapter 16: The Self-Hosting Rebuild
 
 ## What Self-Hosting Means

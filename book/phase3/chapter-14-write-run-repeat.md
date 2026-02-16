@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 14: Write, Run, Repeat"
+parent: "Phase 3: The C Compiler"
+nav_order: 2
+---
+
 # Chapter 14: Write, Run, Repeat
 
 ## The Runtime Wrapper

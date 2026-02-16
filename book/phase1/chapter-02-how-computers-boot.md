@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 2: How Computers Boot"
+parent: "Phase 1: Boot & Input"
+nav_order: 2
+---
+
 # Chapter 2: How Computers Boot
 
 ## The Cold Start Problem
@@ -10,25 +17,22 @@ The answer is a chain of increasingly capable programs, each one loading the nex
 
 ## The Boot Chain
 
-On our Sweet Potato board, the boot chain looks like this:
+Every computer goes through a boot chain — a series of increasingly capable programs, each loading the next. The details vary by hardware, but the pattern is universal:
 
 ```
-Step 1: ROM Code (BL1)
-  Built into the S905X chip. Cannot be changed.
-  Knows how to read from SD card or SPI flash.
-  Loads Step 2 into RAM.
+Step 1: ROM Code / Reset Vector
+  Burned into the chip at the factory. Cannot be changed.
+  Knows how to find and load the next stage from flash or disk.
           ↓
-Step 2: Secondary Bootloader (BL2)
-  Amlogic proprietary code.
-  Initializes DDR RAM (the 2 GB of main memory).
-  Without this, you only have a tiny amount of on-chip SRAM.
-  Loads Step 3.
+Step 2: Platform Initialization
+  Initializes RAM, clocks, and basic hardware.
+  On PCs: the motherboard firmware (UEFI/BIOS).
+  On ARM boards: vendor bootloaders (BL2/BL3).
           ↓
-Step 3: U-Boot (BL3)
-  Open-source bootloader.
-  Initializes USB, SD card, HDMI, etc.
-  Provides UEFI services.
-  Loads and runs our application.
+Step 3: UEFI Firmware
+  Provides standard services: screen, keyboard, filesystem.
+  On PCs: built into the motherboard firmware.
+  On ARM boards: provided by U-Boot or EDK2.
           ↓
 Step 4: Our Code (survival.efi)
   Uses UEFI services to access screen, keyboard, filesystem.
@@ -37,45 +41,25 @@ Step 4: Our Code (survival.efi)
 
 Let's walk through each step.
 
-### Step 1: The ROM Code
+### Steps 1–2: Hardware Initialization
 
-Every S905X chip has a small program burned into it at the factory. This program is stored in ROM (Read-Only Memory) — it literally cannot be modified. It's etched into the silicon.
+When power is applied, the CPU starts executing code from a fixed address — either ROM burned into the chip or a flash chip on the board. This early code initializes the bare essentials: CPU clocks, DDR RAM, and basic I/O.
 
-This ROM code is extremely simple. It knows how to:
-1. Initialize the CPU's basic clocks
-2. Look at specific locations on the SD card (or SPI flash) for the next stage
-3. Load a small amount of code into the chip's internal SRAM (a tiny, fast memory — only about 64 KB)
-4. Jump to that code
+On an **x86_64 PC**, the motherboard firmware handles all of this. You press the power button and the firmware initializes everything — CPU, RAM, PCIe, USB, display — before presenting the UEFI interface. This firmware is stored in a flash chip on the motherboard.
 
-That's it. The ROM code doesn't know about filesystems, HDMI, USB, or anything else. It just loads a blob of bytes from a fixed location and jumps to it.
+On **ARM single-board computers**, the process is more fragmented. A ROM bootloader burned into the SoC loads vendor-specific code that initializes DDR RAM (this often requires proprietary blobs with precise timing parameters for the specific memory chips on the board). Then a bootloader like U-Boot takes over.
 
-### Step 2: DDR Initialization
+The details of this early boot stage are hardware-specific and not something we need to worry about. By the time our code runs, RAM is initialized, the display is ready, and UEFI services are available.
 
-The code that the ROM loads is called BL2 (Boot Loader stage 2). Its primary job is one of the most critical and complex operations in the entire boot process: **initializing DDR RAM**.
+### Step 3: UEFI Firmware
 
-DDR (Double Data Rate) RAM is the 2 GB of main memory on our board. But here's the thing — you can't just start reading and writing to DDR. The memory controller needs to be configured with precise timing parameters: how fast the clock runs, how many cycles to wait between operations, what voltage to use. Get any of this wrong and the RAM produces garbage or doesn't respond at all.
+This is where things become standardized. Regardless of the underlying hardware, UEFI firmware provides the same interface. On PCs, UEFI is built into the motherboard firmware. On ARM boards, it's typically provided by U-Boot or EDK2 (an open-source UEFI implementation).
 
-This is why BL2 is proprietary (closed-source) Amlogic code. DDR initialization requires intimate knowledge of the specific memory chips on the board. Amlogic provides this as a binary blob.
-
-After BL2 runs, we have access to the full 2 GB of RAM. Before BL2, we only had ~64 KB of SRAM to work with.
-
-### Step 3: U-Boot
-
-With RAM available, the next stage can be much more sophisticated. On the Sweet Potato, this is **U-Boot** — a popular open-source bootloader used on many ARM boards.
-
-U-Boot is almost like a tiny operating system. It can:
-- Read files from FAT32 filesystems on SD cards
-- Display images on HDMI
-- Accept keyboard input via USB
-- Download files over the network
-- Run scripts
-- Load and execute other programs
-
-Most importantly for us, U-Boot provides **UEFI services**. This is the interface we'll use.
+The firmware initializes hardware, finds boot devices, and loads UEFI applications. It provides services for screen output, keyboard input, filesystem access, and memory management — everything we need.
 
 ### Step 4: Our Code
 
-Our application is a UEFI executable. U-Boot loads it from the SD card and runs it. We'll explain what that means next.
+Our application is a UEFI executable. The firmware loads it from an SD card or USB drive and runs it. We'll explain what that means next.
 
 ## What is UEFI?
 
@@ -91,7 +75,7 @@ Think of UEFI as a **contract**. The firmware says: "If you call these functions
 - How to set the system clock
 - How to shut down or reboot
 
-The beauty of UEFI is that it's the same interface regardless of the underlying hardware. Whether the firmware is U-Boot on an ARM board, EDK2 on an Intel server, or something else entirely — if it implements UEFI, our code runs on it.
+The beauty of UEFI is that it's the same interface regardless of the underlying hardware. Whether the firmware is on a PC motherboard, U-Boot on an ARM board, or EDK2 on a server — if it implements UEFI, our code runs on it. We build for both aarch64 and x86_64, and the same C source compiles for both.
 
 ### UEFI vs. BIOS
 
@@ -99,9 +83,9 @@ If you've heard of BIOS, UEFI is its modern replacement. The old PC BIOS (Basic 
 
 ### Why UEFI and Not Full Bare-Metal?
 
-We could write code that talks directly to the S905X hardware registers — configuring the HDMI transmitter, programming the USB controller, reading SD card sectors. This is called "full bare-metal" programming. We plan to do this eventually (see `docs/bare-metal-roadmap.md`), but there are good reasons to start with UEFI:
+We could write code that talks directly to hardware registers — configuring display controllers, programming USB host adapters, reading SD card sectors. This is called "full bare-metal" programming. There are good reasons to use UEFI instead:
 
-**1. Amlogic doesn't publish full documentation.** The S905X doesn't have a complete public datasheet. To program the HDMI output directly, you'd need to reverse-engineer the register interface from Linux kernel drivers. That's a fascinating project (and we've documented how to do it), but it could take months just for video output.
+**1. Hardware diversity.** Every SoC and chipset has different registers, different display controllers, different USB implementations. Writing bare-metal drivers locks you to one specific board. UEFI abstracts this away — our code runs on any UEFI machine.
 
 **2. USB is incredibly complex.** A USB keyboard seems simple, but the USB protocol stack involves device enumeration, descriptor parsing, hub management, HID (Human Interface Device) class drivers, and interrupt transfer scheduling. Writing a USB stack from scratch is thousands of lines of tricky code.
 
@@ -194,18 +178,19 @@ We won't use this protocol until Phase 2, but it's good to know it exists.
 
 ## How Our Application Gets Loaded
 
-When the Sweet Potato boots, U-Boot looks for a UEFI application on the SD card. It follows a standard path convention:
+When a UEFI machine boots, the firmware looks for a UEFI application on available boot devices (SD card, USB drive, hard disk). It follows a standard path convention:
 
 ```
-SD Card (FAT32)
+Boot Device (FAT32)
 └── EFI/
     └── BOOT/
-        └── BOOTAA64.EFI     ← Our application
+        ├── BOOTAA64.EFI     ← ARM64 version
+        └── BOOTX64.EFI      ← x86_64 version
 ```
 
-The filename `BOOTAA64.EFI` is special. "BOOT" means "default boot application" and "AA64" means "AArch64" (64-bit ARM). This is defined by the UEFI specification — the firmware knows to look for this specific filename.
+These filenames are defined by the UEFI specification. "BOOT" means "default boot application," "AA64" means AArch64 (64-bit ARM), and "X64" means x86_64. The firmware picks the one matching its architecture.
 
-When U-Boot finds this file, it:
+When the firmware finds the file, it:
 1. Loads the PE binary into RAM
 2. Performs relocations (adjusting memory addresses — more on this in Chapter 3)
 3. Calls our `efi_main()` function
@@ -234,4 +219,4 @@ Using UEFI means following certain rules:
 - We're "bare metal" in the sense that there's no OS, but we use UEFI as a hardware abstraction layer
 - The `EFI_SYSTEM_TABLE` is our gateway to everything the firmware provides
 
-In the next chapter, we'll set up the tools we need to compile code for the Sweet Potato from our development machine.
+In the next chapter, we'll set up the tools we need to cross-compile UEFI applications from our development machine.

@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 7: Hearing Keystrokes"
+parent: "Phase 1: Boot & Input"
+nav_order: 7
+---
+
 # Chapter 7: Hearing Keystrokes
 
 ## The Other Half

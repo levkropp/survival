@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 21: Eating Your Own Dogfood"
+parent: "Phase 4.5: Self-Self-Hosting"
+nav_order: 1
+---
+
 # Chapter 21: Eating Your Own Dogfood
 
 ## The Question

@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 10: Browsing Files"
+parent: "Phase 2: Filesystem & Editor"
+nav_order: 2
+---
+
 # Chapter 10: Browsing Files
 
 ## From API to Interface

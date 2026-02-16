@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 26: Reading NTFS"
+parent: "Phase 5.5: exFAT & NTFS"
+nav_order: 2
+---
+
 # Chapter 26: Reading NTFS
 
 ## The Drive You Cannot Read

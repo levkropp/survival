@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 23: The ISO Writer"
+parent: "Phase 5: Streaming I/O & Tools"
+nav_order: 2
+---
+
 # Chapter 23: The ISO Writer
 
 ## The Escape Hatch

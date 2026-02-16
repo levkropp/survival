@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 17: Syntax Highlighting"
+parent: "Phase 3.5: Syntax Highlighting"
+nav_order: 1
+---
+
 # Chapter 17: Syntax Highlighting
 
 ## Phase 3.5: Quality of Life

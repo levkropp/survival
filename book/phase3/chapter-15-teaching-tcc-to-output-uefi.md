@@ -1,3 +1,10 @@
+---
+layout: default
+title: "Chapter 15: Teaching TCC to Output UEFI"
+parent: "Phase 3: The C Compiler"
+nav_order: 3
+---
+
 # Chapter 15: Teaching TCC to Output UEFI
 
 ## The Problem
