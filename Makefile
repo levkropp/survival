@@ -52,7 +52,7 @@ TARGET   := $(BUILDDIR)/survival.efi
 ESP_DIR  := $(BUILDDIR)/esp/EFI/BOOT
 INC_DIR  := $(BUILDDIR)/esp/include
 
-.PHONY: all clean info esp copy-sources copy-headers all-arches
+.PHONY: all clean info esp copy-sources copy-headers all-arches esp32 esp32-payload
 
 all: $(TARGET) esp copy-sources copy-headers
 
@@ -128,6 +128,20 @@ copy-headers:
 	@cp src/user-headers/*.h $(INC_DIR)/ 2>/dev/null || true
 	@cp src/user-headers/*.c $(BUILDDIR)/esp/ 2>/dev/null || true
 	@echo "User headers installed to $(INC_DIR)/"
+
+# ---- ESP32 flasher targets ----
+
+esp32:
+	cd esp32 && idf.py build
+
+esp32-payload: all-arches
+	cd esp32 && python3 scripts/pack_payload.py --build-dir ../build --output payload.bin
+
+esp32-flash:
+	cd esp32 && idf.py -p $(PORT) flash monitor
+
+esp32-flash-payload:
+	esptool.py --port $(PORT) write_flash 0x170000 esp32/payload.bin
 
 clean:
 	rm -rf build

@@ -1,0 +1,18 @@
+# Target: ESP32 (not S2/S3/C3)
+CONFIG_IDF_TARGET="esp32"
+
+# Flash: 4MB
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Custom partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Increase app size limit (we use ~1.4MB)
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# Serial output for debugging
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# Optimize for size (firmware must fit in 1.4MB)
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y

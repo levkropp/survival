@@ -63,7 +63,6 @@ A $7 ESP32 can store the complete system image in its 4 MB of flash and write it
 | New file | F4 | Create new file or directory |
 | Compile & run | F5 | Compile current .c file and execute it |
 | Rebuild | F6 | Recompile the workstation from source |
-| Linux installer | F7 | Write a Linux ISO to USB |
 | Paste | F8 | Paste copied file |
 | Rename | F9 | Rename file or directory |
 | ISO writer | F10 | Stream an ISO image to a block device |

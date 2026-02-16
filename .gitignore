@@ -4,3 +4,9 @@ tools/gnu-efi/
 *.iso
 _site/
 .jekyll-cache/
+
+# ESP32
+esp32/build/
+esp32/sdkconfig
+esp32/sdkconfig.old
+esp32/payload.bin

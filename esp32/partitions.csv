@@ -1,0 +1,5 @@
+# Survival Flasher partition table (4MB flash)
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+app,      app,  factory, 0x10000,  0x160000,
+payload,  data, 0x40,    0x170000, 0x290000,
