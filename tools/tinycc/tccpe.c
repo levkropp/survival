@@ -947,13 +947,15 @@ static void pe_build_imports(struct pe_info *pe)
                 else
                     ordinal = 0, v = imp_sym->st_value; /* address from tcc_add_symbol() */
 
-#if defined(TCC_IS_NATIVE) && defined(_WIN32)
+#if defined(TCC_IS_NATIVE)
                 if (pe->type == PE_RUN) {
+#ifdef _WIN32
                     if (dllref) {
                         if ( !dllref->handle )
                             dllref->handle = LoadLibraryA(dllref->name);
                         v = (ADDR3264)GetProcAddress(dllref->handle, ordinal?(char*)0+ordinal:name);
                     }
+#endif
                     if (!v)
                         tcc_error_noabort("could not resolve symbol '%s'", name);
                 } else

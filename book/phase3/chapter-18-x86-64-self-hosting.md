@@ -373,6 +373,88 @@ The `__TINYC__` guard is essential. This code compiles only when TCC compiles `s
 
 If we omitted the guard, GCC would assemble the `__chkstk` function into the initial binary. It wouldn't cause harm -- nothing would call it -- but it would be dead code. More importantly, if GCC's assembler syntax differed from TCC's even slightly, the build would break for no reason. The guard keeps GCC and TCC concerns separate.
 
+## Fix 7: PE Import Resolution for In-Memory Execution
+
+F6 rebuild works. F5 self-test works — `"int main(void) { return 42; }"` compiles and runs in memory, returns 42. Open `hello.c`, press F5:
+
+```
+!!!! X64 Exception Type - 06(#UD - Invalid Opcode)  CPU Apic ID - 00000000 !!!!
+RIP  - 00000000FFC00066
+```
+
+Invalid Opcode, but the RIP address is `0xFFC00066` — that's in the OVMF firmware flash region, not in our code or the JIT buffer. The CPU jumped into firmware and hit garbage.
+
+The self-test passed because `return 42` has no external function calls. `hello.c` calls `fb_print` and `fb_rect` — symbols registered via `tcc_add_symbol()`. Those calls go through the PE Import Address Table (IAT). Something is wrong with the IAT.
+
+### How PE Imports Work in Memory
+
+When TCC compiles code with `TCC_OUTPUT_MEMORY` and `TCC_TARGET_PE`, it builds a PE import table just like it would for a file on disk. For each imported symbol, `tccpe.c`'s `pe_build_imports` function writes an address into the IAT. The generated code calls imported functions indirectly: `call [rip+offset]` reads the function address from the IAT and jumps there.
+
+For symbols added via `tcc_add_symbol()`, TCC stores the actual function address in the symbol's `st_value` field. During import building, this address should be written directly into the IAT — the function already exists in memory at a known address, no loading needed.
+
+The import resolution code has three paths:
+
+```c
+/* address from tcc_add_symbol() */
+ordinal = 0, v = imp_sym->st_value;
+
+#if defined(TCC_IS_NATIVE) && defined(_WIN32)
+if (pe->type == PE_RUN) {
+    if (dllref) {
+        /* resolve via LoadLibrary/GetProcAddress */
+        v = (ADDR3264)GetProcAddress(...);
+    }
+    if (!v) tcc_error_noabort("could not resolve '%s'");
+} else
+#endif
+if (ordinal) {
+    v = ordinal | (ADDR3264)1 << (sizeof(ADDR3264)*8 - 1);
+} else {
+    v = pe->thunk->data_offset + rva_base;  /* <-- overwrites v */
+    put_elf_str(pe->thunk, name);
+}
+```
+
+The critical path is the `PE_RUN` block — guarded by `TCC_IS_NATIVE && _WIN32`. On Windows, this block fires for in-memory execution: it keeps the address from `tcc_add_symbol()` (the correct function pointer) and skips the import-name-building code below. The `} else` means the `if (ordinal)` block only runs for file output, not for `PE_RUN`.
+
+On UEFI, `_WIN32` is not defined. The entire `#if` block compiles out. The code falls through to:
+
+```c
+v = pe->thunk->data_offset + rva_base;
+```
+
+This **overwrites** `v` — which held the real function address — with an RVA pointing to the import name string in the thunk section. The IAT gets this garbage value. When `hello.c` calls `fb_print`, the CPU follows the IAT entry to a nonsense address. `0xFFC00066` happens to be in OVMF firmware flash. Invalid Opcode.
+
+### The Fix
+
+The `PE_RUN` guard must activate for any native platform, not just Windows. The `LoadLibraryA`/`GetProcAddress` calls inside it are Windows-specific, but the outer flow control — "for PE_RUN, keep the address and skip import name building" — is platform-independent.
+
+In `tccpe.c`:
+
+```c
+#if defined(TCC_IS_NATIVE)
+                if (pe->type == PE_RUN) {
+#ifdef _WIN32
+                    if (dllref) {
+                        if ( !dllref->handle )
+                            dllref->handle = LoadLibraryA(dllref->name);
+                        v = (ADDR3264)GetProcAddress(dllref->handle,
+                                ordinal?(char*)0+ordinal:name);
+                    }
+#endif
+                    if (!v)
+                        tcc_error_noabort("could not resolve symbol '%s'", name);
+                } else
+#endif
+```
+
+Two changes: the outer `#if` drops `&& defined(_WIN32)`, and the `LoadLibraryA`/`GetProcAddress` block gets its own `#ifdef _WIN32` inside. Now on UEFI:
+
+- `PE_RUN` mode: `v` keeps the function address from `tcc_add_symbol()`. The import name building is skipped. IAT entries contain correct pointers.
+- File output mode: import names are built normally for the PE import directory.
+
+On Windows, behavior is unchanged — the `LoadLibraryA` path still resolves DLL symbols for `PE_RUN`, and file output still builds import tables.
+
 ## The Native Test Harness
 
 Iterating on these fixes through QEMU boot cycles is slow. Each cycle takes 15-20 seconds: rebuild the workstation with GCC, create a disk image, boot QEMU, wait for firmware, press F6, wait for TCC to compile, reboot, watch it crash. For the `__chkstk` debugging alone, we went through dozens of cycles.
@@ -385,7 +467,7 @@ The native test doesn't prove the PE binary boots -- you still need QEMU for tha
 
 The x86_64 self-hosting rebuild now works. Press F6 on x86_64, the workstation recompiles itself, reboots into the new binary. The same F6 already works on ARM64 (Chapter 16). Both architectures are fully self-hosting.
 
-The six fixes, in order:
+The seven fixes, in order:
 
 | Fix | File | Problem |
 |-----|------|---------|
@@ -395,7 +477,8 @@ The six fixes, in order:
 | `_WIN32` predefine guard | `tccpp.c` | Predefined `_WIN32` breaks F6 rebuild |
 | LLP64 type sizes | `efi.h`, `shim.h` | `long` is 4 bytes under PE, corrupts 64-bit types and `jmp_buf` |
 | `__chkstk` | `shim.c` | Large stack frames need custom frame setup |
+| PE import resolution | `tccpe.c` | `PE_RUN` guard excluded UEFI, IAT got wrong addresses for F5 |
 
-The first fix -- `TCC_TARGET_PE` -- is the keystone. Without it, TCC generates the wrong code for x86_64 UEFI. Fixes 2 through 4 are the collateral damage from enabling it: Windows-specific code that must be guarded out. Fix 5 is the data model mismatch that PE mode introduces. Fix 6 is the runtime support function that PE mode requires.
+The first fix -- `TCC_TARGET_PE` -- is the keystone. Without it, TCC generates the wrong code for x86_64 UEFI. Fixes 2 through 4 are the collateral damage from enabling it: Windows-specific code that must be guarded out. Fix 5 is the data model mismatch that PE mode introduces. Fix 6 is the runtime support function that PE mode requires. Fix 7 is the subtlest -- the PE import resolution assumed that in-memory execution only happens on Windows, so on UEFI it silently wrote wrong addresses into the IAT, breaking every call to a registered symbol.
 
-On ARM64, self-hosting required GOT relaxation -- a deep linker patch because ARM64's code generator always uses GOT-indirect addressing. On x86_64, `TCC_TARGET_PE` activates an existing, well-tested code path. The x86_64 fixes are smaller and more surgical: guard out Windows-isms, fix type sizes, provide one runtime function. Different architecture, different path to the same result.
+On ARM64, self-hosting required GOT relaxation -- a deep linker patch because ARM64's code generator always uses GOT-indirect addressing. On x86_64, `TCC_TARGET_PE` activates an existing, well-tested code path. The x86_64 fixes are smaller and more surgical: guard out Windows-isms, fix type sizes, provide one runtime function, fix one platform assumption. Different architecture, different path to the same result.

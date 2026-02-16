@@ -567,7 +567,7 @@ Here's every TCC file we touched, and why:
 | `tccpe.c` | Guard `sys/stat.h` include | No stat on UEFI |
 | `tccpe.c` | Guard `chmod` call | No chmod on UEFI |
 | `tccpe.c` | Guard `system()` in PDB | No processes on UEFI |
-| `tccpe.c` | Guard `LoadLibraryA` | No DLL loading on UEFI |
+| `tccpe.c` | Guard `LoadLibraryA`, widen `PE_RUN` | No DLL loading on UEFI; in-memory import resolution needs `TCC_IS_NATIVE` alone |
 | `arm64-link.c` | GOT relaxation | ADRP+LDR to ADRP+ADD when no GOT |
 
 Fourteen changes. The biggest — GOT relaxation — is about 15 lines of new code. The rest are one-line guard widenings. But without any single one of them, the self-hosting rebuild doesn't work.
