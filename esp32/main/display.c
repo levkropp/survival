@@ -159,6 +159,16 @@ void display_draw_bitmap1bpp(int x, int y, int w, int h,
     }
 }
 
+void display_draw_rgb565_line(int x, int y, int w, const uint16_t *pixels)
+{
+    if (y < 0 || y >= DISPLAY_HEIGHT || w <= 0) return;
+    if (x < 0) { pixels -= x; w += x; x = 0; }
+    if (x + w > DISPLAY_WIDTH) w = DISPLAY_WIDTH - x;
+    if (w <= 0) return;
+
+    esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + 1, pixels);
+}
+
 void display_string(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 {
     int cx = x, cy = y;

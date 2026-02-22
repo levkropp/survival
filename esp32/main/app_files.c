@@ -16,6 +16,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* --- Configuration --- */
 
@@ -85,6 +86,83 @@ static void format_size(uint32_t size, char *buf, int buflen)
         snprintf(buf, buflen, "%3uM", (unsigned)(size / (1024 * 1024)));
     else
         snprintf(buf, buflen, "%3uG", (unsigned)(size / (1024u * 1024u * 1024u)));
+}
+
+/* Check if filename ends with the given extension (case-insensitive). */
+static int has_ext(const char *name, const char *ext)
+{
+    int nlen = (int)strlen(name);
+    int elen = (int)strlen(ext);
+    if (nlen < elen) return 0;
+    return strcasecmp_simple(name + nlen - elen, ext) == 0;
+}
+
+static int is_text_file(const char *name)
+{
+    static const char *exts[] = {
+        ".txt", ".log", ".md", ".csv", ".c", ".h",
+        ".py", ".sh", ".cfg", ".ini", ".json", NULL
+    };
+    for (int i = 0; exts[i]; i++)
+        if (has_ext(name, exts[i])) return 1;
+    return 0;
+}
+
+static int is_bmp_file(const char *name)
+{
+    return has_ext(name, ".bmp");
+}
+
+/* Build full path from s_path + filename. */
+static void build_full_path(char *out, size_t outsz, const char *name)
+{
+    int plen = (int)strlen(s_path);
+    if (plen == 1 && s_path[0] == '/') {
+        out[0] = '/';
+        strncpy(out + 1, name, outsz - 2);
+        out[outsz - 1] = '\0';
+    } else {
+        strncpy(out, s_path, outsz - 1);
+        out[outsz - 1] = '\0';
+        int cur = (int)strlen(out);
+        if (cur + 1 < (int)outsz) {
+            out[cur] = '/';
+            strncpy(out + cur + 1, name, outsz - cur - 2);
+            out[outsz - 1] = '\0';
+        }
+    }
+}
+
+/* Read an entire file into a malloc'd buffer. Returns NULL on error.
+ * Caller must free(). Caps at max_size bytes. */
+static void *read_file(const char *path, uint32_t max_size, uint32_t *out_size)
+{
+    if (s_fs_type == FS_FAT32) {
+        int fh = fat32_file_open(path);
+        if (fh < 0) return NULL;
+
+        uint8_t *buf = malloc(max_size);
+        if (!buf) { fat32_file_close(fh); return NULL; }
+
+        uint32_t total = 0;
+        while (total < max_size) {
+            int n = fat32_file_read(fh, buf + total, 4096);
+            if (n <= 0) break;
+            total += (uint32_t)n;
+        }
+        fat32_file_close(fh);
+
+        *out_size = total;
+        return buf;
+    } else {
+        /* exFAT — readfile gives us the whole thing */
+        size_t fsz;
+        void *data = exfat_readfile(s_exvol, path, &fsz);
+        if (!data) return NULL;
+        if (fsz > max_size) { free(data); return NULL; }
+        *out_size = (uint32_t)fsz;
+        return data;
+    }
 }
 
 /* --- Partition Detection --- */
@@ -314,6 +392,231 @@ static void draw_screen(void)
     draw_footer();
 }
 
+/* --- Text File Viewer --- */
+
+#define TEXT_MAX_SIZE   (32 * 1024)
+#define TEXT_MAX_LINES  1000
+#define TEXT_LINES_PAGE 12
+#define TEXT_CHARS_LINE 40
+#define TEXT_CONTENT_Y  24
+#define TEXT_FOOTER_Y   216
+
+static void view_text_file(const char *path, const char *filename, uint32_t size)
+{
+    if (size > TEXT_MAX_SIZE) size = TEXT_MAX_SIZE;
+
+    uint32_t actual = 0;
+    char *buf = read_file(path, TEXT_MAX_SIZE, &actual);
+    if (!buf) {
+        ui_show_error("Cannot read file.");
+        ui_wait_for_tap();
+        return;
+    }
+
+    /* Parse line offsets: scan for '\n', replace with '\0' */
+    uint16_t *line_off = malloc(TEXT_MAX_LINES * sizeof(uint16_t));
+    if (!line_off) { free(buf); return; }
+
+    int nlines = 0;
+    line_off[0] = 0;
+    nlines = 1;
+    for (uint32_t i = 0; i < actual && nlines < TEXT_MAX_LINES; i++) {
+        if (buf[i] == '\n') {
+            buf[i] = '\0';
+            if (i + 1 < actual) {
+                line_off[nlines++] = (uint16_t)(i + 1);
+            }
+        } else if (buf[i] == '\r') {
+            buf[i] = '\0';  /* strip CR */
+        }
+    }
+    /* Null-terminate the last line */
+    if (actual < TEXT_MAX_SIZE)
+        buf[actual] = '\0';
+    else
+        buf[TEXT_MAX_SIZE - 1] = '\0';
+
+    int top_line = 0;
+
+    /* Draw function */
+    #define TV_DRAW() do { \
+        /* Header */ \
+        display_fill_rect(0, 0, BACK_W, HEADER_H, COLOR_DGRAY); \
+        display_string(4, 4, "< Back", COLOR_WHITE, COLOR_DGRAY); \
+        display_fill_rect(BACK_W, 0, DISPLAY_WIDTH - BACK_W, HEADER_H, COLOR_BLACK); \
+        { \
+            char tb[34]; \
+            strncpy(tb, filename, 33); tb[33] = '\0'; \
+            display_string(BACK_W + 4, 4, tb, COLOR_CYAN, COLOR_BLACK); \
+        } \
+        /* Content */ \
+        display_fill_rect(0, TEXT_CONTENT_Y, DISPLAY_WIDTH, \
+                          TEXT_LINES_PAGE * ROW_HEIGHT, COLOR_BLACK); \
+        for (int _i = 0; _i < TEXT_LINES_PAGE; _i++) { \
+            int _ln = top_line + _i; \
+            if (_ln >= nlines) break; \
+            char _linebuf[TEXT_CHARS_LINE + 1]; \
+            strncpy(_linebuf, buf + line_off[_ln], TEXT_CHARS_LINE); \
+            _linebuf[TEXT_CHARS_LINE] = '\0'; \
+            display_string(0, TEXT_CONTENT_Y + _i * ROW_HEIGHT, \
+                           _linebuf, COLOR_GRAY, COLOR_BLACK); \
+        } \
+        /* Footer */ \
+        display_fill_rect(0, TEXT_FOOTER_Y, DISPLAY_WIDTH, FOOTER_H, COLOR_BLACK); \
+        if (top_line > 0) { \
+            display_fill_rect(0, TEXT_FOOTER_Y, PGUP_W, FOOTER_H, COLOR_DGRAY); \
+            display_string(8, TEXT_FOOTER_Y + 4, "< Pg Up", COLOR_WHITE, COLOR_DGRAY); \
+        } \
+        { \
+            char _ind[32]; \
+            snprintf(_ind, sizeof(_ind), "%d-%d / %d", \
+                     top_line + 1, \
+                     (top_line + TEXT_LINES_PAGE < nlines) ? \
+                         top_line + TEXT_LINES_PAGE : nlines, \
+                     nlines); \
+            int _sw = (int)strlen(_ind) * FONT_WIDTH; \
+            display_string((DISPLAY_WIDTH - _sw) / 2, TEXT_FOOTER_Y + 4, \
+                           _ind, COLOR_GRAY, COLOR_BLACK); \
+        } \
+        if (top_line + TEXT_LINES_PAGE < nlines) { \
+            display_fill_rect(PGDN_X, TEXT_FOOTER_Y, \
+                              DISPLAY_WIDTH - PGDN_X, FOOTER_H, COLOR_DGRAY); \
+            display_string(PGDN_X + 8, TEXT_FOOTER_Y + 4, "Pg Dn >", \
+                           COLOR_WHITE, COLOR_DGRAY); \
+        } \
+    } while(0)
+
+    display_clear(COLOR_BLACK);
+    TV_DRAW();
+
+    while (1) {
+        int tx, ty;
+        touch_wait_tap(&tx, &ty);
+
+        /* Back */
+        if (tx < BACK_W && ty < HEADER_H)
+            break;
+
+        /* Page Up */
+        if (ty >= TEXT_FOOTER_Y && tx < PGUP_W && top_line > 0) {
+            top_line -= TEXT_LINES_PAGE;
+            if (top_line < 0) top_line = 0;
+            TV_DRAW();
+            continue;
+        }
+
+        /* Page Down */
+        if (ty >= TEXT_FOOTER_Y && tx >= PGDN_X &&
+            top_line + TEXT_LINES_PAGE < nlines) {
+            top_line += TEXT_LINES_PAGE;
+            TV_DRAW();
+            continue;
+        }
+    }
+
+    #undef TV_DRAW
+    free(line_off);
+    free(buf);
+}
+
+/* --- BMP Image Viewer --- */
+
+#define BMP_MAX_W 320
+#define BMP_MAX_H 240
+/* Max pixel data: 320*240*3 + padding ≈ 231 KB */
+#define BMP_MAX_FILE (320u * 240u * 4u)
+
+static void view_bmp_file(const char *path, const char *filename, uint32_t size)
+{
+    uint32_t actual = 0;
+    uint8_t *buf = read_file(path, BMP_MAX_FILE, &actual);
+    if (!buf || actual < 54) {
+        if (buf) free(buf);
+        ui_show_error("Cannot read BMP.");
+        ui_wait_for_tap();
+        return;
+    }
+
+    /* Parse BMP header */
+    if (buf[0] != 'B' || buf[1] != 'M') {
+        free(buf);
+        ui_show_error("Not a valid BMP.");
+        ui_wait_for_tap();
+        return;
+    }
+
+    uint32_t data_offset = buf[10] | (buf[11] << 8) |
+                           (buf[12] << 16) | (buf[13] << 24);
+    int32_t bmp_w = (int32_t)(buf[18] | (buf[19] << 8) |
+                              (buf[20] << 16) | (buf[21] << 24));
+    int32_t bmp_h = (int32_t)(buf[22] | (buf[23] << 8) |
+                              (buf[24] << 16) | (buf[25] << 24));
+    uint16_t bpp = buf[28] | (buf[29] << 8);
+    uint32_t compression = buf[30] | (buf[31] << 8) |
+                           (buf[32] << 16) | (buf[33] << 24);
+
+    if (bpp != 24 || compression != 0 || bmp_w <= 0) {
+        free(buf);
+        ui_show_error("Only 24-bit uncompressed BMP.");
+        ui_wait_for_tap();
+        return;
+    }
+
+    /* Handle bottom-up (positive height) or top-down (negative height) */
+    int bottom_up = (bmp_h > 0);
+    int img_h = bottom_up ? bmp_h : -bmp_h;
+    int img_w = bmp_w;
+
+    /* Clip to screen */
+    int draw_w = (img_w > BMP_MAX_W) ? BMP_MAX_W : img_w;
+    int draw_h = (img_h > BMP_MAX_H) ? BMP_MAX_H : img_h;
+
+    /* Center on screen */
+    int off_x = (DISPLAY_WIDTH - draw_w) / 2;
+    int off_y = (DISPLAY_HEIGHT - draw_h) / 2;
+
+    /* Row stride with padding */
+    uint32_t row_bytes = ((uint32_t)(img_w * 3) + 3) & ~3u;
+
+    /* Clear screen and render */
+    display_clear(COLOR_BLACK);
+
+    uint16_t line[BMP_MAX_W];
+    for (int y = 0; y < draw_h; y++) {
+        int src_row;
+        if (bottom_up)
+            src_row = (img_h - 1 - y);  /* bottom-up: first screen row = last BMP row */
+        else
+            src_row = y;
+
+        uint32_t row_offset = data_offset + (uint32_t)src_row * row_bytes;
+        if (row_offset + (uint32_t)(draw_w * 3) > actual)
+            break;  /* out of data */
+
+        const uint8_t *row = buf + row_offset;
+        for (int x = 0; x < draw_w; x++) {
+            uint8_t b = row[x * 3 + 0];
+            uint8_t g = row[x * 3 + 1];
+            uint8_t r = row[x * 3 + 2];
+            line[x] = display_rgb(r, g, b);
+        }
+        display_draw_rgb565_line(off_x, off_y + y, draw_w, line);
+    }
+
+    /* Overlay filename in top-left */
+    char tb[34];
+    strncpy(tb, filename, 33); tb[33] = '\0';
+    int tw = (int)strlen(tb) * FONT_WIDTH;
+    display_fill_rect(0, 0, tw + 8, FONT_HEIGHT + 4, COLOR_BLACK);
+    display_string(4, 2, tb, COLOR_WHITE, COLOR_BLACK);
+
+    /* Tap to dismiss */
+    int tx, ty;
+    touch_wait_tap(&tx, &ty);
+
+    free(buf);
+}
+
 /* --- File Info Popup --- */
 
 static void show_file_info(struct file_entry *e)
@@ -349,6 +652,19 @@ static void show_file_info(struct file_entry *e)
     /* Wait for tap to dismiss */
     int tx, ty;
     touch_wait_tap(&tx, &ty);
+}
+
+static void open_file(struct file_entry *e)
+{
+    char full_path[256];
+    build_full_path(full_path, sizeof(full_path), e->name);
+
+    if (is_text_file(e->name))
+        view_text_file(full_path, e->name, e->size);
+    else if (is_bmp_file(e->name))
+        view_bmp_file(full_path, e->name, e->size);
+    else
+        show_file_info(e);
 }
 
 /* --- Navigation --- */
@@ -471,7 +787,8 @@ void app_files_run(void)
                 if (e->is_dir) {
                     enter_directory(e->name);
                 } else {
-                    show_file_info(e);
+                    open_file(e);
+                    display_clear(COLOR_BLACK);
                     draw_screen();
                 }
             }

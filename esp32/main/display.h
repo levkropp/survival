@@ -29,6 +29,10 @@ void display_string(int x, int y, const char *s, uint16_t fg, uint16_t bg);
 void display_draw_bitmap1bpp(int x, int y, int w, int h,
                               const uint8_t *bitmap, uint16_t fg, uint16_t bg);
 
+/* Draw a horizontal line of pre-converted RGB565 pixels.
+ * pixels[] must contain at least w entries. */
+void display_draw_rgb565_line(int x, int y, int w, const uint16_t *pixels);
+
 /* RGB888 to RGB565 conversion. */
 static inline uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
