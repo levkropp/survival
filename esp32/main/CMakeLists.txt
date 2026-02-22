@@ -16,5 +16,6 @@ idf_component_register(
         "apps.c"
         "app_flasher.c"
         "app_settings.c"
+        "app_files.c"
     INCLUDE_DIRS "."
 )

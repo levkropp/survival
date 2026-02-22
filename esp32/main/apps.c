@@ -13,6 +13,7 @@
 #include "font.h"
 #include "app_flasher.h"
 #include "app_settings.h"
+#include "app_files.h"
 
 #include <string.h>
 
@@ -36,7 +37,7 @@ static void app_placeholder(const char *name)
     }
 }
 
-static void app_files_run(void)   { app_placeholder("Files"); }
+/* app_files_run declared in app_files.h */
 static void app_notes_run(void)   { app_placeholder("Notes"); }
 static void app_guide_run(void)   { app_placeholder("Guide"); }
 static void app_tools_run(void)   { app_placeholder("Tools"); }
