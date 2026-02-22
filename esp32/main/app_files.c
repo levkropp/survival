@@ -18,6 +18,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "sped.h"
 #include "femtojpeg.h"
 
@@ -364,6 +367,22 @@ static void draw_file_list(void)
     }
 }
 
+static void format_size64(uint64_t bytes, char *buf, int buflen)
+{
+    if (bytes < 1024)
+        snprintf(buf, buflen, "%uB", (unsigned)bytes);
+    else if (bytes < 1024 * 1024)
+        snprintf(buf, buflen, "%uK", (unsigned)(bytes / 1024));
+    else if (bytes < 1024ULL * 1024 * 1024)
+        snprintf(buf, buflen, "%u.%uM",
+                 (unsigned)(bytes / (1024 * 1024)),
+                 (unsigned)(bytes % (1024 * 1024) * 10 / (1024 * 1024)));
+    else
+        snprintf(buf, buflen, "%u.%uG",
+                 (unsigned)(bytes / (1024ULL * 1024 * 1024)),
+                 (unsigned)(bytes % (1024ULL * 1024 * 1024) * 10 / (1024ULL * 1024 * 1024)));
+}
+
 static void draw_footer(void)
 {
     display_fill_rect(0, FOOTER_Y, DISPLAY_WIDTH, FOOTER_H, COLOR_BLACK);
@@ -380,11 +399,28 @@ static void draw_footer(void)
         display_string(8, FOOTER_Y + 4, "< Pg Up", COLOR_WHITE, COLOR_DGRAY);
     }
 
-    /* Summary */
-    char summary[48];
-    snprintf(summary, sizeof(summary), "%d file%s, %d dir%s",
-             files, files == 1 ? "" : "s",
-             dirs, dirs == 1 ? "" : "s");
+    /* Summary: "3 files, 2 dirs  1.2G/3.7G" */
+    uint64_t total = 0, free_b = 0;
+    int have_vol = 0;
+    if (s_fs_type == FS_FAT32)
+        have_vol = (fat32_volume_info(&total, &free_b) == 0);
+    else if (s_fs_type == FS_EXFAT && s_exvol)
+        have_vol = (exfat_volume_info(s_exvol, &total, &free_b) == 0);
+
+    char summary[64];
+    if (have_vol) {
+        char used_s[12], total_s[12];
+        format_size64(total - free_b, used_s, sizeof(used_s));
+        format_size64(total, total_s, sizeof(total_s));
+        snprintf(summary, sizeof(summary), "%d file%s, %d dir%s  %s/%s",
+                 files, files == 1 ? "" : "s",
+                 dirs, dirs == 1 ? "" : "s",
+                 used_s, total_s);
+    } else {
+        snprintf(summary, sizeof(summary), "%d file%s, %d dir%s",
+                 files, files == 1 ? "" : "s",
+                 dirs, dirs == 1 ? "" : "s");
+    }
     int sumw = (int)strlen(summary) * FONT_WIDTH;
     int sumx = (DISPLAY_WIDTH - sumw) / 2;
     display_string(sumx, FOOTER_Y + 4, summary, COLOR_GRAY, COLOR_BLACK);
@@ -632,21 +668,118 @@ static void view_bmp_file(const char *path, const char *filename, uint32_t size)
 
 /* --- PNG/JPEG Image Viewer --- */
 
-/* Max decoded image file size (~307 KB) */
-#define IMG_MAX_FILE (320u * 240u * 4u)
+/* Max source image file size (up to 2 MB for large JPEGs we can downscale) */
+#define IMG_MAX_FILE (2u * 1024u * 1024u)
 
-/* Callback context for streaming image decoders */
-struct img_draw_ctx {
-    int off_x, off_y;     /* centering offset on screen */
-    int max_w, max_h;     /* clip to screen bounds */
+/* Viewer layout */
+#define VIEW_HDR_H   24
+#define VIEW_Y       VIEW_HDR_H
+#define VIEW_W       DISPLAY_WIDTH
+#define VIEW_H       (DISPLAY_HEIGHT - VIEW_HDR_H)
+
+/* Header button positions */
+#define BTN_BACK_W   48
+#define BTN_MINUS_X  (BTN_BACK_W + 4)
+#define BTN_MINUS_W  28
+#define BTN_PLUS_X   (BTN_MINUS_X + BTN_MINUS_W + 4)
+#define BTN_PLUS_W   28
+
+/* Drag threshold: movement below this is treated as a tap */
+#define DRAG_THRESH  6
+
+/* Callback context for decoding to memory buffer */
+struct img_buf_ctx {
+    uint16_t *pixels;
+    int w, h;
 };
 
-static void img_row_cb(int y, int w, const uint16_t *rgb565, void *user)
+static void img_buf_cb(int y, int w, const uint16_t *rgb565, void *user)
 {
-    struct img_draw_ctx *ctx = user;
-    if (y >= ctx->max_h) return;
-    int draw_w = (w > ctx->max_w) ? ctx->max_w : w;
-    display_draw_rgb565_line(ctx->off_x, ctx->off_y + y, draw_w, rgb565);
+    struct img_buf_ctx *ctx = user;
+    if (y >= ctx->h) return;
+    int copy_w = (w > ctx->w) ? ctx->w : w;
+    memcpy(ctx->pixels + y * ctx->w, rgb565, copy_w * sizeof(uint16_t));
+}
+
+/* Draw the viewer header bar */
+static void viewer_draw_header(const char *filename, int zoom)
+{
+    /* Back button */
+    display_fill_rect(0, 0, BTN_BACK_W, VIEW_HDR_H, COLOR_DGRAY);
+    display_string(4, 4, "Back", COLOR_WHITE, COLOR_DGRAY);
+
+    /* [-] button */
+    display_fill_rect(BTN_MINUS_X, 0, BTN_MINUS_W, VIEW_HDR_H,
+                      zoom > 1 ? COLOR_DGRAY : COLOR_BLACK);
+    display_char(BTN_MINUS_X + 10, 4, '-',
+                 zoom > 1 ? COLOR_WHITE : COLOR_DGRAY,
+                 zoom > 1 ? COLOR_DGRAY : COLOR_BLACK);
+
+    /* [+] button */
+    display_fill_rect(BTN_PLUS_X, 0, BTN_PLUS_W, VIEW_HDR_H,
+                      zoom < 4 ? COLOR_DGRAY : COLOR_BLACK);
+    display_char(BTN_PLUS_X + 10, 4, '+',
+                 zoom < 4 ? COLOR_WHITE : COLOR_DGRAY,
+                 zoom < 4 ? COLOR_DGRAY : COLOR_BLACK);
+
+    /* Zoom label + filename */
+    int lx = BTN_PLUS_X + BTN_PLUS_W + 8;
+    display_fill_rect(lx, 0, DISPLAY_WIDTH - lx, VIEW_HDR_H, COLOR_BLACK);
+
+    char label[40];
+    snprintf(label, sizeof(label), "%dx %.20s", zoom, filename);
+    display_string(lx, 4, label, COLOR_CYAN, COLOR_BLACK);
+}
+
+/* Draw the viewport from the pixel buffer with zoom and pan */
+static void viewer_draw_viewport(const uint16_t *pixels, int img_w, int img_h,
+                                 int zoom, int pan_x, int pan_y)
+{
+    uint16_t line[VIEW_W];
+    int zoomed_w = img_w * zoom;
+    int zoomed_h = img_h * zoom;
+
+    for (int sy = 0; sy < VIEW_H; sy++) {
+        /* Screen row → position in zoomed image space */
+        int zy = pan_y + sy;
+
+        if (zy < 0 || zy >= zoomed_h) {
+            /* Outside image — black */
+            memset(line, 0, sizeof(line));
+        } else {
+            int iy = zy / zoom;
+            for (int sx = 0; sx < VIEW_W; sx++) {
+                int zx = pan_x + sx;
+                if (zx < 0 || zx >= zoomed_w) {
+                    line[sx] = COLOR_BLACK;
+                } else {
+                    line[sx] = pixels[(iy * img_w) + (zx / zoom)];
+                }
+            }
+        }
+        display_draw_rgb565_line(0, VIEW_Y + sy, VIEW_W, line);
+    }
+}
+
+/* Clamp pan so the viewport stays within the zoomed image, or center if smaller */
+static void clamp_pan(int *pan_x, int *pan_y, int img_w, int img_h, int zoom)
+{
+    int zoomed_w = img_w * zoom;
+    int zoomed_h = img_h * zoom;
+
+    if (zoomed_w <= VIEW_W) {
+        *pan_x = -(VIEW_W - zoomed_w) / 2;  /* center horizontally */
+    } else {
+        if (*pan_x < 0) *pan_x = 0;
+        if (*pan_x > zoomed_w - VIEW_W) *pan_x = zoomed_w - VIEW_W;
+    }
+
+    if (zoomed_h <= VIEW_H) {
+        *pan_y = -(VIEW_H - zoomed_h) / 2;  /* center vertically */
+    } else {
+        if (*pan_y < 0) *pan_y = 0;
+        if (*pan_y > zoomed_h - VIEW_H) *pan_y = zoomed_h - VIEW_H;
+    }
 }
 
 static void view_decoded_image(const char *path, const char *filename,
@@ -677,43 +810,142 @@ static void view_decoded_image(const char *path, const char *filename,
         img_w = info.width; img_h = info.height;
     }
 
-    /* Center on screen, clip */
-    int draw_w = (img_w > DISPLAY_WIDTH) ? DISPLAY_WIDTH : img_w;
-    int draw_h = (img_h > DISPLAY_HEIGHT) ? DISPLAY_HEIGHT : img_h;
+    /* Compute decode scale factor (shrink large images to fit in memory) */
+    int scale = 1;
+    if (is_png) {
+        if (img_w > DISPLAY_WIDTH * 2 || img_h > DISPLAY_HEIGHT * 2)
+            scale = 4;
+        else if (img_w > DISPLAY_WIDTH || img_h > DISPLAY_HEIGHT)
+            scale = 2;
+    } else {
+        if (img_w > DISPLAY_WIDTH * 4 || img_h > DISPLAY_HEIGHT * 4)
+            scale = 8;
+        else if (img_w > DISPLAY_WIDTH || img_h > DISPLAY_HEIGHT)
+            scale = 4;
+    }
+    int dec_w = img_w / (scale > 1 ? scale : 1);
+    int dec_h = img_h / (scale > 1 ? scale : 1);
+    if (dec_w == 0 || dec_h == 0) { free(buf); return; }
 
-    struct img_draw_ctx ctx;
-    ctx.off_x = (DISPLAY_WIDTH - draw_w) / 2;
-    ctx.off_y = (DISPLAY_HEIGHT - draw_h) / 2;
-    ctx.max_w = draw_w;
-    ctx.max_h = draw_h;
+    /* Allocate pixel buffer for decoded image */
+    uint16_t *pixels = malloc((size_t)dec_w * dec_h * sizeof(uint16_t));
+    if (!pixels) {
+        free(buf);
+        ui_show_error("Not enough memory.");
+        ui_wait_for_tap();
+        return;
+    }
+    memset(pixels, 0, (size_t)dec_w * dec_h * sizeof(uint16_t));
 
-    display_clear(COLOR_BLACK);
+    /* Decode to pixel buffer */
+    struct img_buf_ctx bctx;
+    bctx.pixels = pixels;
+    bctx.w = dec_w;
+    bctx.h = dec_h;
 
-    /* Decode and render row-by-row */
     int ok;
     if (is_png)
-        ok = sped_decode(buf, actual, img_row_cb, &ctx);
+        ok = sped_decode(buf, actual, scale, img_buf_cb, &bctx);
     else
-        ok = fjpeg_decode(buf, actual, img_row_cb, &ctx);
+        ok = fjpeg_decode(buf, actual, scale, img_buf_cb, &bctx);
 
-    free(buf);
+    free(buf);  /* Source data no longer needed */
 
     if (ok != 0) {
+        free(pixels);
         ui_show_error("Decode error.");
         ui_wait_for_tap();
         return;
     }
 
-    /* Overlay filename */
-    char tb[34];
-    strncpy(tb, filename, 33); tb[33] = '\0';
-    int tw = (int)strlen(tb) * FONT_WIDTH;
-    display_fill_rect(0, 0, tw + 8, FONT_HEIGHT + 4, COLOR_BLACK);
-    display_string(4, 2, tb, COLOR_WHITE, COLOR_BLACK);
+    /* --- Interactive viewer loop --- */
+    int zoom = 1;
+    int pan_x = 0, pan_y = 0;
+    clamp_pan(&pan_x, &pan_y, dec_w, dec_h, zoom);
 
-    /* Tap to dismiss */
-    int tx, ty;
-    touch_wait_tap(&tx, &ty);
+    display_clear(COLOR_BLACK);
+    viewer_draw_header(filename, zoom);
+    viewer_draw_viewport(pixels, dec_w, dec_h, zoom, pan_x, pan_y);
+
+    int was_touching = 0;
+    int drag_sx = 0, drag_sy = 0;       /* screen coords at touch-down */
+    int drag_pan_x = 0, drag_pan_y = 0; /* pan at touch-down */
+    int last_tx = 0, last_ty = 0;
+    int dragging = 0;
+
+    while (1) {
+        int tx, ty;
+        int touching = touch_read(&tx, &ty);
+
+        if (touching && !was_touching) {
+            /* Touch down */
+            drag_sx = tx;
+            drag_sy = ty;
+            drag_pan_x = pan_x;
+            drag_pan_y = pan_y;
+            dragging = 0;
+            last_tx = tx;
+            last_ty = ty;
+        } else if (touching && was_touching) {
+            /* Held / dragging — only move viewport for touches in the image area */
+            int dx = tx - drag_sx;
+            int dy = ty - drag_sy;
+            if (!dragging && (dx > DRAG_THRESH || dx < -DRAG_THRESH ||
+                              dy > DRAG_THRESH || dy < -DRAG_THRESH)) {
+                dragging = 1;
+            }
+            if (dragging && drag_sy >= VIEW_Y) {
+                pan_x = drag_pan_x - dx;
+                pan_y = drag_pan_y - dy;
+                clamp_pan(&pan_x, &pan_y, dec_w, dec_h, zoom);
+                viewer_draw_viewport(pixels, dec_w, dec_h, zoom, pan_x, pan_y);
+            }
+            last_tx = tx;
+            last_ty = ty;
+        } else if (!touching && was_touching) {
+            /* Release — if not a drag, treat as tap */
+            if (!dragging) {
+                int ttx = last_tx, tty = last_ty;
+
+                /* Back button */
+                if (ttx < BTN_BACK_W && tty < VIEW_HDR_H)
+                    break;
+
+                /* [-] button */
+                if (ttx >= BTN_MINUS_X && ttx < BTN_MINUS_X + BTN_MINUS_W &&
+                    tty < VIEW_HDR_H && zoom > 1) {
+                    /* Zoom out: keep center stable */
+                    int cx = pan_x + VIEW_W / 2;
+                    int cy = pan_y + VIEW_H / 2;
+                    zoom /= 2;
+                    pan_x = cx / 2 - VIEW_W / 2;
+                    pan_y = cy / 2 - VIEW_H / 2;
+                    clamp_pan(&pan_x, &pan_y, dec_w, dec_h, zoom);
+                    viewer_draw_header(filename, zoom);
+                    viewer_draw_viewport(pixels, dec_w, dec_h, zoom, pan_x, pan_y);
+                }
+
+                /* [+] button */
+                if (ttx >= BTN_PLUS_X && ttx < BTN_PLUS_X + BTN_PLUS_W &&
+                    tty < VIEW_HDR_H && zoom < 4) {
+                    /* Zoom in: keep center stable */
+                    int cx = pan_x + VIEW_W / 2;
+                    int cy = pan_y + VIEW_H / 2;
+                    zoom *= 2;
+                    pan_x = cx * 2 - VIEW_W / 2;
+                    pan_y = cy * 2 - VIEW_H / 2;
+                    clamp_pan(&pan_x, &pan_y, dec_w, dec_h, zoom);
+                    viewer_draw_header(filename, zoom);
+                    viewer_draw_viewport(pixels, dec_w, dec_h, zoom, pan_x, pan_y);
+                }
+            }
+        }
+
+        was_touching = touching;
+        vTaskDelay(20);
+    }
+
+    free(pixels);
 }
 
 /* --- File Info Popup --- */

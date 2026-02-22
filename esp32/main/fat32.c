@@ -1197,3 +1197,28 @@ void fat32_file_close(int handle)
     if (handle == 1)
         s_readfile.active = 0;
 }
+
+int fat32_volume_info(uint64_t *total_bytes, uint64_t *free_bytes)
+{
+    uint32_t cluster_size = (uint32_t)s_fs.spc * SECTOR_SIZE;
+    *total_bytes = (uint64_t)s_fs.total_clusters * cluster_size;
+
+    /* Count free clusters by scanning the FAT */
+    uint32_t free_count = 0;
+    uint32_t entries_per_sector = SECTOR_SIZE / 4;
+    uint32_t cl = 2;  /* clusters start at 2 */
+
+    for (uint32_t sec = 0; sec < s_fs.fat_sectors && cl < s_fs.total_clusters + 2; sec++) {
+        if (read_sector(s_fs.fat_start + sec, s_buf) < 0)
+            return -1;
+        uint32_t *fat = (uint32_t *)s_buf;
+        uint32_t start = (sec == 0) ? 2 : 0;  /* skip entries 0 and 1 */
+        for (uint32_t i = start; i < entries_per_sector && cl < s_fs.total_clusters + 2; i++, cl++) {
+            if ((fat[i] & 0x0FFFFFFF) == 0)
+                free_count++;
+        }
+    }
+
+    *free_bytes = (uint64_t)free_count * cluster_size;
+    return 0;
+}

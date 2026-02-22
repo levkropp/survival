@@ -80,4 +80,7 @@ int fat32_stream_write(int handle, const void *data, uint32_t len);
 /* Finalize the stream. Returns 0 on success. */
 int fat32_stream_close(int handle);
 
+/* Get volume total and free space. Returns 0 on success. */
+int fat32_volume_info(uint64_t *total_bytes, uint64_t *free_bytes);
+
 #endif /* FAT32_H */

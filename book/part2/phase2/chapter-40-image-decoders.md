@@ -14,7 +14,7 @@ The BMP viewer works. It reads uncompressed pixels, flips rows, converts BGR to 
 
 PNG and JPEG decoders exist as libraries — libpng, libjpeg, stb_image. But they're built for desktops. libpng alone is 80,000+ lines of code. stb_image is 7,500. On an ESP32 with 520 KB of RAM and 4 MB of flash, we need something smaller. Much smaller.
 
-This chapter builds two decoders from scratch: **sped** (Simplest PNG ESP32 Decoder) for PNG files, and **femtojpeg** for baseline JPEG. Together they're about 850 lines of C. They decode directly to RGB565, the display's native pixel format, via row-by-row callbacks. No intermediate 24-bit buffer, no heap-heavy output arrays. Just stream pixels to the screen as fast as they decompress.
+This chapter builds two decoders from scratch: **sped** (Simplest PNG ESP32 Decoder) for PNG files, and **femtojpeg** for baseline JPEG. Together they're about 1,100 lines of C. They decode directly to RGB565, the display's native pixel format, via row-by-row callbacks. Both support downscaling — sped can halve or quarter a PNG, and femtojpeg can decode at 1/4 or 1/8 resolution — so even images far larger than our 320×240 screen can be displayed without exhausting memory.
 
 ## The Row Callback Pattern
 
@@ -134,20 +134,51 @@ for (uint32_t x = 0; x < w; x++) {
 
 Alpha channels (types 4 and 6) are ignored — our display has no concept of transparency. We just take the color components and pack them into RGB565. For indexed images (type 3), we look up the palette we parsed from the PLTE chunk.
 
-### Memory Budget
+### PNG Downscaling
 
-The decoder allocates four buffers:
+A 640×480 PNG would need 640 × 3 × 2 (cur + prev) + 640 (out) + 32,768 (dict) = ~37 KB just for working memory, plus the output row is wider than our 320-pixel display. We need to downscale during decode.
+
+PNG filter reconstruction requires processing every scanline — you can't skip rows, because each row depends on the previous one via the Up, Average, and Paeth filters. So we decode at full resolution and average the output. For scale=2, we accumulate 2×2 blocks of pixels into a sum buffer, then emit one averaged row per two input rows. For scale=4, we accumulate 4×4 blocks.
+
+The accumulator stores per-output-pixel R, G, B sums as `uint16_t` values (max sum for scale=4: 255 × 16 = 4,080, fits in 16 bits). Each decoded scanline's pixels are extracted to R/G/B, accumulated into the appropriate output column, and every `scale` rows the sums are divided and packed to RGB565:
+
+```c
+for (uint32_t x = 0; x < limit; x++) {
+    uint8_t r, g, bl;
+    get_pixel(cur, x, ctype, pal, &r, &g, &bl);
+    uint32_t ox = x / scale;
+    acc[ox * 3 + 0] += r;
+    acc[ox * 3 + 1] += g;
+    acc[ox * 3 + 2] += bl;
+}
+if ((row % scale) == scale - 1) {
+    int div = scale * scale;
+    for (uint32_t ox = 0; ox < out_w; ox++) {
+        uint8_t r  = acc[ox * 3 + 0] / div;
+        uint8_t g  = acc[ox * 3 + 1] / div;
+        uint8_t bl = acc[ox * 3 + 2] / div;
+        out[ox] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (bl >> 3);
+    }
+    cb(out_row++, out_w, out, user);
+    memset(acc, 0, out_w * 3 * sizeof(uint16_t));
+}
+```
+
+The extra cost is the accumulator: `out_w × 3 × 2` bytes. For a 640×480 image scaled to 320×240: 320 × 6 = 1,920 bytes. A small price for handling images twice the screen size.
+
+### PNG Memory Budget
 
 | Buffer | Size | Purpose |
 |--------|------|---------|
 | `cur` | width × bpp | Current scanline (raw pixels) |
-| `prev` | width × bpp | Previous scanline (for Up/Average/Paeth filters) |
-| `out` | width × 2 | RGB565 output row |
+| `prev` | width × bpp | Previous scanline (for filters) |
+| `out` | out_w × 2 | RGB565 output row |
 | `dict` | 32,768 | DEFLATE dictionary |
+| `acc` | out_w × 6 | Downscale accumulator (scale > 1 only) |
 
-For a 320-pixel-wide RGB image: 960 + 960 + 640 + 32,768 = ~35 KB. For a 160-wide indexed image: 160 + 160 + 320 + 32,768 = ~33 KB. The 32 KB dictionary dominates — it's the minimum DEFLATE requires. All buffers are freed when decoding completes.
+For a 320-pixel-wide RGB image at 1:1: 960 + 960 + 640 + 32,768 = ~35 KB. For a 640-wide image at 1/2: 1,920 + 1,920 + 640 + 32,768 + 1,920 = ~39 KB. The 32 KB DEFLATE dictionary dominates in every case.
 
-Total: 243 lines of C. No external dependencies beyond miniz (already in ESP-IDF).
+Total: 296 lines of C. No external dependencies beyond miniz (already in ESP-IDF).
 
 ## JPEG: How It Works
 
@@ -195,6 +226,10 @@ static void huff_build(const uint8_t *counts, huff_table_t *ht)
 ```
 
 Decoding reads bits one at a time, growing the code until it falls within a valid range for that length. It's not the fastest approach — a lookup table would be faster — but it uses almost no memory: 48 bytes per table plus the value array.
+
+A JPEG has four Huffman tables: two DC (one per luminance and chrominance) and two AC. DC tables are small — at most 16 symbols. AC tables can have up to 256. The naive approach is a flat `huff_val[4][256]` array: 1,024 bytes, three-quarters wasted on DC tables that never use more than 16 entries.
+
+We split them: `dc_vals[2][16]` (32 bytes) and `ac_vals[2][256]` (512 bytes). The `huff_decode()` function indexes the right array based on table ID. This saves 480 bytes in the decoder context — meaningful when your total working memory target is under 7 KB.
 
 ### Quantization and the DCT
 
@@ -279,43 +314,84 @@ if (ctx.restart_interval) {
 }
 ```
 
-### Memory Budget
+### JPEG Downscaling
 
-The decoder's context structure (`fjctx_t`) lives on the stack: ~2 KB for the Huffman tables, quantization tables, and state. The only heap allocation is the row buffer — one MCU-height's worth of RGB565 output:
+A 2560×1920 photo from a digital camera would need a 2560-pixel-wide row buffer — over 80 KB just for the output. We need to decode it smaller. JPEG's block-based structure gives us two natural scaling strategies.
 
-| Buffer | Size | Purpose |
-|--------|------|---------|
-| `fjctx_t` | ~2,140 bytes | Decoder state (stack) |
-| `row_buf` | width × mcu_h × 2 | One MCU row of RGB565 output |
-| `y_blocks` | 4 × 64 = 256 | Y channel working memory (stack) |
-| `cb_block`, `cr_block` | 64 + 64 = 128 | Chroma working memory (stack) |
-
-For a 320-pixel-wide H2V2 image: row buffer = 320 × 16 × 2 = 10,240 bytes. Stack usage: ~2.5 KB. Total: ~13 KB.
-
-Total: 611 lines of C. No external dependencies whatsoever.
-
-## Integration
-
-Both decoders follow the same pattern: read the file into memory, get dimensions, decode with a row callback. The callback centers the image on screen:
+**1/8 scale — DC only.** Each 8×8 block in a JPEG starts with a DC coefficient that represents the block's average value. At 1/8 scale, we extract just the DC coefficient, skip all 63 AC coefficients (we still consume their Huffman codes to advance the bitstream), and emit a single pixel per block. No IDCT needed:
 
 ```c
-struct img_draw_ctx {
-    int off_x, off_y;
-    int max_w, max_h;
-};
+*pixel_out = clamp8(DESCALE(dc * q[0]) + 128);
+/* Then skip AC codes to advance the bitstream */
+```
 
-static void img_row_cb(int y, int w,
-                       const uint16_t *rgb565, void *user)
+A 2560×1920 H2V2 image becomes 320×240 — exactly our screen size — with minimal computation.
+
+**1/4 scale — IDCT then average.** We run the full IDCT (we already have it), then average each 8×8 output block into 2×2 pixels by summing four 4×4 quadrants:
+
+```c
+static void block_to_2x2(const uint8_t *blk, uint8_t out[4])
 {
-    struct img_draw_ctx *ctx = user;
-    if (y >= ctx->max_h) return;
-    int draw_w = (w > ctx->max_w) ? ctx->max_w : w;
-    display_draw_rgb565_line(ctx->off_x, ctx->off_y + y,
-                             draw_w, rgb565);
+    for (int qy = 0; qy < 2; qy++)
+        for (int qx = 0; qx < 2; qx++) {
+            int sum = 0;
+            for (int y = 0; y < 4; y++)
+                for (int x = 0; x < 4; x++)
+                    sum += blk[(qy * 4 + y) * 8 + qx * 4 + x];
+            out[qy * 2 + qx] = (uint8_t)(sum >> 4);
+        }
 }
 ```
 
-The `open_file()` dispatcher in `app_files.c` gains two new branches:
+This reuses the existing IDCT code. A 1280×960 image becomes 320×240.
+
+### Two-Pass Decode for H2V2
+
+H2V2 (4:2:0) MCUs are 16 pixels tall. At 1:1 scale, buffering all 16 rows at 320 pixels wide costs 320 × 16 × 2 = 10,240 bytes. We can halve this by decoding each MCU row twice.
+
+The decoder saves its state (bitstream position, DC predictions, restart counter) at the start of each MCU row. The first pass decodes and emits the top 8 pixel rows. Then it restores the saved state and decodes the same MCU row again, emitting the bottom 8 rows. The row buffer drops from `width × 16 × 2` to `width × 8 × 2` = 5,120 bytes.
+
+The cost: 2× the Huffman and IDCT work for H2V2 images at full scale. H1V1 and H2V1 images (MCU height = 8) don't need the second pass. At 1/4 and 1/8 scale, the MCU output height fits in a single pass regardless.
+
+### JPEG Memory Budget
+
+| Mode | Context (stack) | Blocks (stack) | Row buffer (heap) | **Total** |
+|------|----------------|----------------|-------------------|-----------|
+| 1:1 H2V2 320px | 1,320 | 384 | 5,120 | **~7 KB** |
+| 1:1 H1V1 320px | 1,320 | 128 | 5,120 | **~7 KB** |
+| 1/4 H2V2 1280px | 1,320 | 384 | 2,560 | **~4 KB** |
+| 1/8 H2V2 2560px | 1,320 | 384 | 1,280 | **~3 KB** |
+
+Under 7 KB in every case. That's competitive with TJpgDec (~3.5 KB) while supporting row-by-row streaming output.
+
+Total: 819 lines of C. No external dependencies whatsoever.
+
+## Integration
+
+Both decoders follow the same pattern: read the file into memory, get dimensions, compute a scale factor, decode with a row callback. The scale factor is chosen to bring the output dimensions down to something reasonable for our 320×240 display:
+
+```c
+/* PNG: sped supports 1/2/4 */
+if (img_w > DISPLAY_WIDTH * 2 || img_h > DISPLAY_HEIGHT * 2)
+    scale = 4;
+else if (img_w > DISPLAY_WIDTH || img_h > DISPLAY_HEIGHT)
+    scale = 2;
+
+/* JPEG: femtojpeg supports 1/4/8 */
+if (img_w > DISPLAY_WIDTH * 4 || img_h > DISPLAY_HEIGHT * 4)
+    scale = 8;
+else if (img_w > DISPLAY_WIDTH || img_h > DISPLAY_HEIGHT)
+    scale = 4;
+```
+
+Both decoders take the scale as a parameter:
+
+```c
+sped_decode(buf, actual, scale, row_cb, &ctx);
+fjpeg_decode(buf, actual, scale, row_cb, &ctx);
+```
+
+The `open_file()` dispatcher in `app_files.c` routes by extension:
 
 ```c
 if (is_text_file(e->name))
@@ -330,26 +406,29 @@ else
     show_file_info(e);
 ```
 
-From the user's perspective, tapping a `.png` or `.jpg` file does the same thing as tapping a `.bmp` — the image appears on screen, centered, with the filename overlaid. Tap to dismiss.
+From the user's perspective, tapping a `.png` or `.jpg` file does the same thing as tapping a `.bmp` — the image appears on screen. A 2560×1920 JPEG photo from a digital camera is decoded at 1/8 scale to 320×240 and displayed directly. A 640×480 PNG map is decoded at 1/2 scale to 320×240. Images that fit the screen are decoded at full resolution. The scaling is invisible to the user — images just work.
 
 ## What We Built
 
 ```
 File                         Lines   Change
 ───────────────────────────  ─────   ──────────────────────────────
-sped/sped.h                     34   New: PNG decoder header
-sped/sped.c                    243   New: Streaming PNG decoder
-femtojpeg/femtojpeg.h           33   New: JPEG decoder header
-femtojpeg/femtojpeg.c          611   New: Baseline JPEG decoder
-esp32/main/app_files.c         893   +89 lines: PNG/JPEG viewer
-                                     integration, file type detection
+sped/sped.h                     36   New: PNG decoder header
+sped/sped.c                    296   New: Streaming PNG decoder with
+                                     1/2 and 1/4 downscaling
+femtojpeg/femtojpeg.h           36   New: JPEG decoder header
+femtojpeg/femtojpeg.c          819   New: Baseline JPEG decoder with
+                                     1/4 and 1/8 downscaling, two-pass
+                                     H2V2, split Huffman tables
+esp32/main/app_files.c        1106   +302 lines: Image viewer with
+                                     scale computation, file type routing
 ```
 
-Two decoders, 921 lines total:
+Two decoders, 1,187 lines total:
 
-- **sped**: 243 lines. Parses PNG chunks, inflates via tinfl, reconstructs all five scanline filters, handles grayscale/RGB/RGBA/indexed. Needs ~35 KB of working memory (dominated by the 32 KB DEFLATE dictionary).
+- **sped**: 296 lines. Parses PNG chunks, inflates via tinfl, reconstructs all five scanline filters, handles grayscale/RGB/RGBA/indexed. Supports 1/2 and 1/4 downscaling via pixel averaging. Needs ~35 KB of working memory (dominated by the 32 KB DEFLATE dictionary).
 
-- **femtojpeg**: 611 lines. Parses JPEG markers, decodes Huffman codes, dequantizes with pre-scaled Winograd factors, applies 80-multiply IDCT, upsamples chroma, converts YCbCr to RGB565. Needs ~13 KB of working memory. Zero external dependencies.
+- **femtojpeg**: 819 lines. Parses JPEG markers, decodes Huffman codes, dequantizes with pre-scaled Winograd factors, applies 80-multiply IDCT, upsamples chroma, converts YCbCr to RGB565. Supports 1/4 scale (IDCT + 4×4 averaging) and 1/8 scale (DC-only, no IDCT). Two-pass decode halves the row buffer for H2V2 images. Split Huffman value tables save 480 bytes. Total working memory: under 7 KB at any scale. Zero external dependencies.
 
 Both decoders are standalone libraries — they know nothing about the display, the filesystem, or the ESP32. They take a buffer of bytes and call a function with rows of pixels. This means they can be reused in any embedded project that needs to decode images to RGB565: e-ink displays, LED matrices, frame buffers, or any other target that accepts pixel data row by row.
 
@@ -357,4 +436,4 @@ The file browser can now open the files that actually matter. Text files, BMP im
 
 ---
 
-**Next:** Chapter 41: The Notes App
+**Next:** Chapter 41: The Image Viewer
