@@ -1,0 +1,3 @@
+[submodule "cyd-emulator"]
+	path = cyd-emulator
+	url = git@github.com:levkropp/cyd-emulator.git
