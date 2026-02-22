@@ -1,3 +1,9 @@
 [submodule "cyd-emulator"]
 	path = cyd-emulator
 	url = git@github.com:levkropp/cyd-emulator.git
+[submodule "sped"]
+	path = sped
+	url = git@github.com:levkropp/sped.git
+[submodule "femtojpeg"]
+	path = femtojpeg
+	url = git@github.com:levkropp/femtojpeg.git

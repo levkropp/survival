@@ -18,6 +18,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "sped.h"
+#include "femtojpeg.h"
+
 /* --- Configuration --- */
 
 #define FILES_MAX_ENTRIES 128
@@ -111,6 +114,16 @@ static int is_text_file(const char *name)
 static int is_bmp_file(const char *name)
 {
     return has_ext(name, ".bmp");
+}
+
+static int is_png_file(const char *name)
+{
+    return has_ext(name, ".png");
+}
+
+static int is_jpg_file(const char *name)
+{
+    return has_ext(name, ".jpg") || has_ext(name, ".jpeg");
 }
 
 /* Build full path from s_path + filename. */
@@ -617,6 +630,92 @@ static void view_bmp_file(const char *path, const char *filename, uint32_t size)
     free(buf);
 }
 
+/* --- PNG/JPEG Image Viewer --- */
+
+/* Max decoded image file size (~307 KB) */
+#define IMG_MAX_FILE (320u * 240u * 4u)
+
+/* Callback context for streaming image decoders */
+struct img_draw_ctx {
+    int off_x, off_y;     /* centering offset on screen */
+    int max_w, max_h;     /* clip to screen bounds */
+};
+
+static void img_row_cb(int y, int w, const uint16_t *rgb565, void *user)
+{
+    struct img_draw_ctx *ctx = user;
+    if (y >= ctx->max_h) return;
+    int draw_w = (w > ctx->max_w) ? ctx->max_w : w;
+    display_draw_rgb565_line(ctx->off_x, ctx->off_y + y, draw_w, rgb565);
+}
+
+static void view_decoded_image(const char *path, const char *filename,
+                               uint32_t size, int is_png)
+{
+    uint32_t actual = 0;
+    uint8_t *buf = read_file(path, IMG_MAX_FILE, &actual);
+    if (!buf || actual < 8) {
+        if (buf) free(buf);
+        ui_show_error("Cannot read image.");
+        ui_wait_for_tap();
+        return;
+    }
+
+    /* Get image dimensions */
+    int img_w = 0, img_h = 0;
+    if (is_png) {
+        sped_info_t info;
+        if (sped_info(buf, actual, &info) != 0) {
+            free(buf); ui_show_error("Bad PNG file."); ui_wait_for_tap(); return;
+        }
+        img_w = (int)info.width; img_h = (int)info.height;
+    } else {
+        fjpeg_info_t info;
+        if (fjpeg_info(buf, actual, &info) != 0) {
+            free(buf); ui_show_error("Bad JPEG file."); ui_wait_for_tap(); return;
+        }
+        img_w = info.width; img_h = info.height;
+    }
+
+    /* Center on screen, clip */
+    int draw_w = (img_w > DISPLAY_WIDTH) ? DISPLAY_WIDTH : img_w;
+    int draw_h = (img_h > DISPLAY_HEIGHT) ? DISPLAY_HEIGHT : img_h;
+
+    struct img_draw_ctx ctx;
+    ctx.off_x = (DISPLAY_WIDTH - draw_w) / 2;
+    ctx.off_y = (DISPLAY_HEIGHT - draw_h) / 2;
+    ctx.max_w = draw_w;
+    ctx.max_h = draw_h;
+
+    display_clear(COLOR_BLACK);
+
+    /* Decode and render row-by-row */
+    int ok;
+    if (is_png)
+        ok = sped_decode(buf, actual, img_row_cb, &ctx);
+    else
+        ok = fjpeg_decode(buf, actual, img_row_cb, &ctx);
+
+    free(buf);
+
+    if (ok != 0) {
+        ui_show_error("Decode error.");
+        ui_wait_for_tap();
+        return;
+    }
+
+    /* Overlay filename */
+    char tb[34];
+    strncpy(tb, filename, 33); tb[33] = '\0';
+    int tw = (int)strlen(tb) * FONT_WIDTH;
+    display_fill_rect(0, 0, tw + 8, FONT_HEIGHT + 4, COLOR_BLACK);
+    display_string(4, 2, tb, COLOR_WHITE, COLOR_BLACK);
+
+    /* Tap to dismiss */
+    int tx, ty;
+    touch_wait_tap(&tx, &ty);
+}
+
 /* --- File Info Popup --- */
 
 static void show_file_info(struct file_entry *e)
@@ -663,6 +762,10 @@ static void open_file(struct file_entry *e)
         view_text_file(full_path, e->name, e->size);
     else if (is_bmp_file(e->name))
         view_bmp_file(full_path, e->name, e->size);
+    else if (is_png_file(e->name))
+        view_decoded_image(full_path, e->name, e->size, 1);
+    else if (is_jpg_file(e->name))
+        view_decoded_image(full_path, e->name, e->size, 0);
     else
         show_file_info(e);
 }

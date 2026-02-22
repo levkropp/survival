@@ -17,5 +17,7 @@ idf_component_register(
         "app_flasher.c"
         "app_settings.c"
         "app_files.c"
-    INCLUDE_DIRS "."
+        "../../sped/sped.c"
+        "../../femtojpeg/femtojpeg.c"
+    INCLUDE_DIRS "." "../../sped" "../../femtojpeg"
 )

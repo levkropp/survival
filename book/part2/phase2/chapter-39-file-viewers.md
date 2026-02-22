@@ -306,4 +306,4 @@ The file browser is now genuinely useful. You can navigate to a text file and re
 
 ---
 
-**Next:** Chapter 40: The Notes App
+**Next:** Chapter 40: Image Decoders
