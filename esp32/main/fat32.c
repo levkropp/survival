@@ -374,6 +374,31 @@ static uint8_t name_to_83(const char *name, uint8_t *out)
     return nt_flags;
 }
 
+/* Convert 8.3 directory entry name back to readable string.
+ * Uses nt_reserved flags to restore original case:
+ *   bit 3 (0x08) = base name was all lowercase
+ *   bit 4 (0x10) = extension was all lowercase */
+static void name_from_83(const uint8_t *raw, uint8_t nt_flags, char *out)
+{
+    int pos = 0;
+    /* Base name: up to 8 chars, trim trailing spaces */
+    for (int i = 0; i < 8 && raw[i] != ' '; i++) {
+        char c = (char)raw[i];
+        if ((nt_flags & 0x08) && c >= 'A' && c <= 'Z') c += 32;
+        out[pos++] = c;
+    }
+    /* Extension: up to 3 chars, trim trailing spaces */
+    if (raw[8] != ' ') {
+        out[pos++] = '.';
+        for (int i = 8; i < 11 && raw[i] != ' '; i++) {
+            char c = (char)raw[i];
+            if ((nt_flags & 0x10) && c >= 'A' && c <= 'Z') c += 32;
+            out[pos++] = c;
+        }
+    }
+    out[pos] = '\0';
+}
+
 /* ---- VFAT Long Filename (LFN) support ---- */
 
 #define ATTR_LONG_NAME 0x0F
@@ -672,6 +697,26 @@ static uint32_t walk_path(const char *path)
     return cluster;
 }
 
+/* Walk a path for reading — like walk_path() but never creates directories.
+ * Returns cluster number of the final directory, or 0 if not found. */
+static uint32_t find_path(const char *path)
+{
+    uint32_t cluster = 2; /* root */
+    char component[64];
+
+    while (*path) {
+        while (*path == '/' || *path == '\\') path++;
+        if (!*path) break;
+        int len = 0;
+        while (*path && *path != '/' && *path != '\\' && len < 63)
+            component[len++] = *path++;
+        component[len] = '\0';
+        cluster = find_in_dir(cluster, component, NULL);
+        if (cluster < 2) return 0;
+    }
+    return cluster;
+}
+
 /* ---- Public API ---- */
 
 int fat32_mkdir(const char *path)
@@ -889,4 +934,266 @@ int fat32_stream_close(int handle)
 
     s_stream.active = 0;
     return add_named_entry(s_stream.dir_cluster, s_stream.filename, &entry);
+}
+
+/* ---- Reading API (Chapter 36) ---- */
+
+int fat32_read_init(uint32_t partition_start_lba)
+{
+    s_fs.part_start = partition_start_lba;
+
+    /* Read BPB from first sector of partition */
+    if (read_sector(partition_start_lba, s_buf) < 0)
+        return -1;
+
+    struct fat32_bpb *bpb = (struct fat32_bpb *)s_buf;
+    if (bpb->signature != 0xAA55 || bpb->fat_size_32 == 0) {
+        ESP_LOGE(TAG, "read_init: invalid BPB (sig=0x%04X, fat32=%lu)",
+                 bpb->signature, (unsigned long)bpb->fat_size_32);
+        return -1;
+    }
+
+    s_fs.spc = bpb->sectors_per_cluster;
+    s_fs.fat_sectors = bpb->fat_size_32;
+    s_fs.fat_start = partition_start_lba + bpb->reserved_sectors;
+    s_fs.data_start = s_fs.fat_start + s_fs.fat_sectors * bpb->num_fats;
+    s_fs.total_clusters = (bpb->total_sectors_32 - bpb->reserved_sectors
+                           - s_fs.fat_sectors * bpb->num_fats) / s_fs.spc;
+    /* Prevent accidental allocation when reading */
+    s_fs.next_free_cluster = s_fs.total_clusters + 2;
+
+    ESP_LOGI(TAG, "read_init: spc=%lu, clusters=%lu",
+             (unsigned long)s_fs.spc, (unsigned long)s_fs.total_clusters);
+    return 0;
+}
+
+/* ---- Directory enumeration ---- */
+
+static struct {
+    int active;
+    uint32_t cluster;       /* current cluster being scanned */
+    uint32_t sector;        /* sector offset within cluster */
+    int entry;              /* entry index within sector */
+    uint16_t lfn_buf[260];  /* accumulated LFN characters */
+    int lfn_active;         /* 1 if we're collecting LFN entries */
+} s_readdir;
+
+int fat32_open_dir(const char *path)
+{
+    if (s_readdir.active) return -1;
+
+    uint32_t cluster;
+    if (!path || !path[0] || (path[0] == '/' && !path[1]))
+        cluster = 2; /* root */
+    else
+        cluster = find_path(path);
+
+    if (cluster < 2) return -1;
+
+    s_readdir.active = 1;
+    s_readdir.cluster = cluster;
+    s_readdir.sector = 0;
+    s_readdir.entry = 0;
+    s_readdir.lfn_active = 0;
+    return 1;
+}
+
+int fat32_read_dir(int handle, struct fat32_dir_info *info)
+{
+    if (!s_readdir.active || handle != 1) return -1;
+
+    int entries_per_sector = SECTOR_SIZE / (int)sizeof(struct fat32_dir_entry);
+
+    while (s_readdir.cluster >= 2 && s_readdir.cluster < FAT32_EOC) {
+        uint64_t base_lba = cluster_to_lba(s_readdir.cluster);
+
+        for (; s_readdir.sector < s_fs.spc; s_readdir.sector++) {
+            if (read_sector((uint32_t)(base_lba + s_readdir.sector), s_dir) < 0)
+                return -1;
+
+            struct fat32_dir_entry *entries = (struct fat32_dir_entry *)s_dir;
+
+            for (; s_readdir.entry < entries_per_sector; s_readdir.entry++) {
+                struct fat32_dir_entry *de = &entries[s_readdir.entry];
+
+                if (de->name[0] == 0x00) {
+                    /* End of directory */
+                    s_readdir.active = 0;
+                    return 0;
+                }
+                if (de->name[0] == 0xE5) {
+                    s_readdir.lfn_active = 0;
+                    continue;
+                }
+
+                if (de->attr == ATTR_LONG_NAME) {
+                    uint8_t *e = (uint8_t *)de;
+                    int seq = e[0] & 0x3F;
+                    if (e[0] & 0x40) {
+                        memset(s_readdir.lfn_buf, 0, sizeof(s_readdir.lfn_buf));
+                        s_readdir.lfn_active = 1;
+                    }
+                    if (s_readdir.lfn_active && seq >= 1 && seq <= 20)
+                        extract_lfn_chars(e, s_readdir.lfn_buf, seq);
+                    continue;
+                }
+
+                /* Skip volume label */
+                if (de->attr & ATTR_VOLUME_ID) {
+                    s_readdir.lfn_active = 0;
+                    continue;
+                }
+
+                /* Skip . and .. */
+                if (de->name[0] == '.' &&
+                    (de->name[1] == ' ' || de->name[1] == '.')) {
+                    s_readdir.lfn_active = 0;
+                    continue;
+                }
+
+                /* Real entry — fill info */
+                if (s_readdir.lfn_active) {
+                    /* Convert UCS-2 LFN to ASCII */
+                    int k = 0;
+                    while (k < 127 && s_readdir.lfn_buf[k] != 0)  {
+                        info->name[k] = (char)(s_readdir.lfn_buf[k] & 0xFF);
+                        k++;
+                    }
+                    info->name[k] = '\0';
+                } else {
+                    name_from_83(de->name, de->nt_reserved, info->name);
+                }
+                s_readdir.lfn_active = 0;
+
+                info->size = de->file_size;
+                info->is_dir = (de->attr & ATTR_DIRECTORY) ? 1 : 0;
+
+                /* Advance cursor past this entry for next call */
+                s_readdir.entry++;
+                return 1;
+            }
+            s_readdir.entry = 0;
+        }
+        /* Move to next cluster in directory chain */
+        s_readdir.sector = 0;
+        s_readdir.cluster = fat_get(s_readdir.cluster);
+    }
+
+    s_readdir.active = 0;
+    return 0;
+}
+
+void fat32_close_dir(int handle)
+{
+    if (handle == 1)
+        s_readdir.active = 0;
+}
+
+/* ---- File reading ---- */
+
+static struct {
+    int active;
+    uint32_t current_cluster;
+    uint32_t file_size;
+    uint32_t position;          /* bytes read so far */
+    uint32_t sector_in_cluster; /* which sector within current cluster */
+    uint32_t buf_pos;           /* read offset within s_stream_buf */
+} s_readfile;
+
+int fat32_file_open(const char *path)
+{
+    if (s_readfile.active) return -1;
+    if (s_stream.active) return -1; /* s_stream_buf is shared */
+
+    /* Split path into directory + filename */
+    const char *last_sep = NULL;
+    for (const char *p = path; *p; p++)
+        if (*p == '/' || *p == '\\') last_sep = p;
+
+    uint32_t dir_cluster = 2;
+    const char *filename;
+
+    if (last_sep) {
+        char dirpath[256];
+        int dlen = (int)(last_sep - path);
+        if (dlen >= 256) dlen = 255;
+        memcpy(dirpath, path, (size_t)dlen);
+        dirpath[dlen] = '\0';
+        dir_cluster = find_path(dirpath);
+        if (dir_cluster < 2) return -1;
+        filename = last_sep + 1;
+    } else {
+        filename = path;
+    }
+
+    int entry_idx;
+    uint32_t cluster = find_in_dir(dir_cluster, filename, &entry_idx);
+    if (cluster < 2) return -1;
+
+    /* s_dir still contains the sector with our entry — extract file_size */
+    struct fat32_dir_entry *entries = (struct fat32_dir_entry *)s_dir;
+    int idx_in_sector = entry_idx % (SECTOR_SIZE / (int)sizeof(struct fat32_dir_entry));
+    uint32_t file_size = entries[idx_in_sector].file_size;
+
+    s_readfile.active = 1;
+    s_readfile.current_cluster = cluster;
+    s_readfile.file_size = file_size;
+    s_readfile.position = 0;
+    s_readfile.sector_in_cluster = 0;
+    s_readfile.buf_pos = SECTOR_SIZE; /* force load on first read */
+    return 1;
+}
+
+int fat32_file_read(int handle, void *buf, uint32_t len)
+{
+    if (!s_readfile.active || handle != 1) return -1;
+
+    /* Clamp to remaining bytes */
+    uint32_t remaining = s_readfile.file_size - s_readfile.position;
+    if (remaining == 0) return 0;
+    if (len > remaining) len = remaining;
+
+    uint8_t *dst = (uint8_t *)buf;
+    uint32_t copied = 0;
+
+    while (copied < len) {
+        /* Load next sector if buffer exhausted */
+        if (s_readfile.buf_pos >= SECTOR_SIZE) {
+            /* Advance to next cluster if needed */
+            if (s_readfile.sector_in_cluster >= s_fs.spc) {
+                uint32_t next = fat_get(s_readfile.current_cluster);
+                if (next < 2 || next >= FAT32_EOC) {
+                    s_readfile.active = 0;
+                    return (copied > 0) ? (int)copied : 0;
+                }
+                s_readfile.current_cluster = next;
+                s_readfile.sector_in_cluster = 0;
+            }
+
+            uint64_t lba = cluster_to_lba(s_readfile.current_cluster)
+                         + s_readfile.sector_in_cluster;
+            if (read_sector((uint32_t)lba, s_stream_buf) < 0)
+                return -1;
+
+            s_readfile.sector_in_cluster++;
+            s_readfile.buf_pos = 0;
+        }
+
+        uint32_t avail = SECTOR_SIZE - s_readfile.buf_pos;
+        uint32_t want = len - copied;
+        uint32_t chunk = (want < avail) ? want : avail;
+
+        memcpy(dst + copied, s_stream_buf + s_readfile.buf_pos, chunk);
+        s_readfile.buf_pos += chunk;
+        s_readfile.position += chunk;
+        copied += chunk;
+    }
+
+    return (int)copied;
+}
+
+void fat32_file_close(int handle)
+{
+    if (handle == 1)
+        s_readfile.active = 0;
 }

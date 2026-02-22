@@ -31,14 +31,14 @@ fi
 make -C "$BUILD_DIR" -j"$(nproc)" --quiet 2>/dev/null || \
     make -C "$BUILD_DIR" -j"$(nproc)"
 
-# Check payload exists
-if [ ! -f "$PAYLOAD" ]; then
-    echo "Error: payload not found at $PAYLOAD"
-    echo "Run esp32/scripts/pack_payload.py first, or pass --payload <path>"
-    exit 1
+# Build emulator args
+EMU_ARGS=(--sdcard "$SDCARD")
+
+# Only pass --payload if it exists
+if [ -f "$PAYLOAD" ]; then
+    EMU_ARGS+=(--payload "$PAYLOAD")
 fi
 
 exec "$BUILD_DIR/cyd-emulator" \
-    --payload "$PAYLOAD" \
-    --sdcard "$SDCARD" \
+    "${EMU_ARGS[@]}" \
     "${EXTRA_ARGS[@]}"

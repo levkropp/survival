@@ -6,6 +6,7 @@ idf_component_register(
         "sdcard.c"
         "gpt.c"
         "fat32.c"
+        "exfat.c"
         "flasher.c"
         "payload.c"
         "ui.c"
