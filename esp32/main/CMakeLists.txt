@@ -10,5 +10,10 @@ idf_component_register(
         "payload.c"
         "ui.c"
         "font.c"
+        "settings.c"
+        "app.c"
+        "apps.c"
+        "app_flasher.c"
+        "app_settings.c"
     INCLUDE_DIRS "."
 )

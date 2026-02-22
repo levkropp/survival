@@ -133,6 +133,32 @@ void display_char(int x, int y, char c, uint16_t fg, uint16_t bg)
     }
 }
 
+void display_draw_bitmap1bpp(int x, int y, int w, int h,
+                              const uint8_t *bitmap, uint16_t fg, uint16_t bg)
+{
+    int row_bytes = (w + 7) / 8;
+    uint16_t pixels[32];  /* max 32px wide icons */
+
+    for (int row = 0; row < h; row++) {
+        int dy = y + row;
+        if (dy < 0 || dy >= DISPLAY_HEIGHT) continue;
+
+        const uint8_t *src = bitmap + row * row_bytes;
+        for (int col = 0; col < w; col++) {
+            int bit = src[col / 8] & (0x80 >> (col & 7));
+            pixels[col] = bit ? fg : bg;
+        }
+
+        int dx = x;
+        int pw = w;
+        if (dx < 0) { /* clip left */ pw += dx; dx = 0; }
+        if (dx + pw > DISPLAY_WIDTH) pw = DISPLAY_WIDTH - dx;
+        if (pw > 0)
+            esp_lcd_panel_draw_bitmap(panel, dx, dy, dx + pw, dy + 1,
+                                      pixels + (dx - x));
+    }
+}
+
 void display_string(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 {
     int cx = x, cy = y;

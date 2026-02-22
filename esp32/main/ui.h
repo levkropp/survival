@@ -1,20 +1,11 @@
 /*
- * ui.h — Touch UI state machine (menu, progress, done/error)
+ * ui.h — Shared UI helpers (splash, progress, done/error, back button)
  */
 #ifndef UI_H
 #define UI_H
 
-/* Menu choices */
-#define UI_CHOICE_FLASH_AARCH64  1
-#define UI_CHOICE_FLASH_X86_64   2
-
 /* Show splash screen: "SURVIVAL WORKSTATION" + version info. */
 void ui_show_splash(void);
-
-/* Show the main menu with architecture selection buttons.
- * If has_usb is true, shows a grayed-out "USB Boot (ESP32-S3)" hint.
- * Blocks until a button is tapped. Returns a UI_CHOICE_* value. */
-int ui_show_menu(int has_usb);
 
 /* Update the progress display during flashing. */
 void ui_update_progress(const char *status, int current, int total);
@@ -27,5 +18,11 @@ void ui_show_error(const char *message);
 
 /* Block until the user taps anywhere. */
 void ui_wait_for_tap(void);
+
+/* Draw a "< Back" button in the top-left corner. */
+void ui_draw_back_button(void);
+
+/* Check if a tap at (tx, ty) hits the back button. */
+int ui_check_back_button(int tx, int ty);
 
 #endif /* UI_H */

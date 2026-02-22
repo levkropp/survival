@@ -24,6 +24,11 @@ void display_char(int x, int y, char c, uint16_t fg, uint16_t bg);
 /* Draw a null-terminated string. Wraps at screen edge. */
 void display_string(int x, int y, const char *s, uint16_t fg, uint16_t bg);
 
+/* Draw a 1-bit-per-pixel bitmap. Bit 7 of each byte = leftmost pixel.
+ * Each row is (w+7)/8 bytes. Set bits draw fg, clear bits draw bg. */
+void display_draw_bitmap1bpp(int x, int y, int w, int h,
+                              const uint8_t *bitmap, uint16_t fg, uint16_t bg);
+
 /* RGB888 to RGB565 conversion. */
 static inline uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)
 {

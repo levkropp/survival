@@ -405,6 +405,12 @@ The survival kit is complete. A solar panel, a keyboard, a monitor, any UEFI-cap
 
 The ESP32 stores the workstation. The SD card carries it. The computer runs it. And the workstation can rebuild itself, modify itself, and grow — because it includes its own compiler and its own source code.
 
-From here, the road opens up. Phase 2 could add ESP32-S3 USB boot (presenting the workstation as a bootable USB mass storage device). Phase 3 could turn the CYD's screen into a survival reference viewer. But those are future chapters. Right now, the flasher works. The card boots. The rebuild succeeds.
+From here, the road opens up. The CYD has a display, a touchscreen, and an SD card slot. It has FAT32 code, a decompression engine, and over a megabyte of free flash. It's a computer — and right now it only does one thing.
+
+Phase 2 turns it into a toolkit.
 
 That's the milestone.
+
+---
+
+**Next:** [Chapter 35: The Home Screen](../phase2/chapter-35-the-home-screen)
