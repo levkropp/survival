@@ -96,3 +96,15 @@ This book walks through building the entire system from scratch, chapter by chap
 | 32 | [Building FAT32](book/part2/phase1/chapter-32-building-fat32) |
 | 33 | [Packing the Payload](book/part2/phase1/chapter-33-packing-the-payload) |
 | 34 | [Flash!](book/part2/phase1/chapter-34-flash) |
+
+#### [Phase 2: The Survival Toolkit](book/part2/phase2/)
+
+| # | Chapter |
+|---|---------|
+| 35 | [The Home Screen](book/part2/phase2/chapter-35-the-home-screen) |
+| 36 | [Reading FAT32](book/part2/phase2/chapter-36-reading-fat32) |
+| 37 | [exFAT Support](book/part2/phase2/chapter-37-exfat-support) |
+| 38 | [The File Browser](book/part2/phase2/chapter-38-the-file-browser) |
+| 39 | [File Viewers](book/part2/phase2/chapter-39-file-viewers) |
+| 40 | [Image Decoders](book/part2/phase2/chapter-40-image-decoders) |
+| 41 | [The Image Viewer](book/part2/phase2/chapter-41-image-viewer) |
